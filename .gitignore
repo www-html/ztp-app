@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+creds.json
+settings.json
+admin_auth.json
+.secret_key
+devices.json
+generic_profiles.json
+uploads/*
+!uploads/.gitkeep
+_webroot/
+_dhcpd.conf
+_smoketest.py

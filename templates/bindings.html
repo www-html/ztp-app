@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZTP Manager — Bindings &amp; Health</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%231b6ef3'/%3E%3Ctext%20x='32'%20y='42'%20font-size='30'%20font-family='Arial'%20font-weight='bold'%20fill='white'%20text-anchor='middle'%3EZ+%3C/text%3E%3C/svg%3E">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root { --glass-bg: rgba(255,255,255,.07); --glass-bd: rgba(255,255,255,.15); }
+    body { min-height:100vh; color:#e8edf4; font-size:.95rem;
+      background: radial-gradient(1100px 560px at 8% -12%, #173a6b 0, transparent 60%),
+        radial-gradient(900px 480px at 112% 8%, #38206b 0, transparent 55%), #0a0f1d; }
+    .glass { background:var(--glass-bg); border:1px solid var(--glass-bd);
+      backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+      border-radius:16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+    .chip { background:var(--glass-bg); border:1px solid var(--glass-bd); border-radius:999px;
+      padding:.35rem .9rem; display:inline-flex; gap:.45rem; } .chip b{ color:#fff; }
+    .table{ color:#e8edf4; --bs-table-bg:transparent; --bs-table-color:#e8edf4; }
+    .table>:not(caption)>*>*{ border-color:rgba(255,255,255,.10); color:#e8edf4; }
+    .table thead th{ color:#9fb3d0; font-weight:600; }
+    select.form-select option, option { background:#13203b; color:#e8edf4; }
+    code,.mono{ color:#9ad0ff; font-family:ui-monospace,Consolas,monospace; font-size:.82rem; }
+    .btn-glass{ background:rgba(255,255,255,.1); border:1px solid var(--glass-bd); color:#fff; }
+    .navbar{ border-bottom:1px solid var(--glass-bd); } a{ color:#9ad0ff; }
+    footer{ color:rgba(255,255,255,.4); font-size:.8rem; }
+    .dot{ width:.6rem; height:.6rem; border-radius:50%; display:inline-block; }
+  </style>
+</head>
+<body>
+<nav class="navbar px-4 py-3 mb-4 d-flex justify-content-between">
+  <span class="navbar-brand text-white fw-bold mb-0">ZTP&nbsp;Manager — Bindings &amp; Health</span>
+  <div class="d-flex align-items-center gap-2">
+    <a href="/" class="btn btn-sm btn-glass">Dashboard</a>
+    <a href="/logs" class="btn btn-sm btn-glass">Logs</a>
+    <form method="get" action="/bindings" class="d-flex align-items-center gap-2 mb-0">
+      <input type="hidden" name="health" value="1">
+      <select name="src_sel" class="form-select form-select-sm" style="width:auto"
+              title="Source IP for ping/SSH (routing test) — incl. loopbacks on the VM">
+        <option value="">source: auto</option>
+        {% for ip in sources %}<option value="{{ ip }}" {{ 'selected' if ip==src }}>src {{ ip }}</option>{% endfor %}
+      </select>
+      <input name="src" class="form-control form-control-sm" style="width:11rem"
+             placeholder="or custom/loopback IP" value="{{ src }}"
+             title="Override: type any local source IP (e.g. a loopback) the device has a route to">
+      <button class="btn btn-sm btn-success">Run health check</button>
+    </form>
+    <a href="/export/bindings.csv{{ '?health=1&src=' ~ src if src else '?health=1' }}" class="btn btn-sm btn-outline-info">Export CSV</a>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 pb-4">
+
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <span class="chip">DHCP range <b>{{ settings.range_low }} – {{ settings.range_high }}</b></span>
+    <span class="chip"><b>{{ fixed_count }}</b> fixed IPs</span>
+    <span class="chip"><b>{{ lease_count }}</b> active leases</span>
+    <span class="chip">SSH verify: <b>{{ 'ready' if creds_set else 'off (set credentials on Dashboard)' }}</b></span>
+  </div>
+
+  {% if not health %}
+  <div class="alert alert-info py-2">Showing configured bindings + DHCP leases. Click
+     <b>Run health check</b> to ping + SSH each device. (Health checks are live and may take a few seconds.)</div>
+  {% endif %}
+
+  <div class="glass p-4 mb-3">
+    <table class="table table-sm align-middle mb-0">
+      <thead><tr>
+        <th>Hostname</th><th>Method</th><th>Identifier</th><th>Type</th>
+        <th>DHCP IP</th><th>Mgmt IP</th><th>Config</th><th>DHCP lease</th>
+        <th>Ping</th><th>SSH</th><th>Provisioning</th>
+      </tr></thead>
+      <tbody>
+        {% for d in devices %}
+        {% set h = health.get(d.hostname) %}
+        {% set lease = leases.get(d.ip_address) %}
+        <tr>
+          <td>{{ d.hostname }}</td>
+          <td><span class="badge {{ 'bg-info' if d.match_method=='serial' else 'bg-secondary' }}">{{ d.match_method }}</span></td>
+          <td class="mono">{{ d.serial_number or d.mac_address }}</td>
+          <td>{{ d.device_type }}</td>
+          <td class="mono">{{ d.ip_address or '—' }}</td>
+          <td class="mono">{{ d.mgmt_ip or '—' }}{% if h and h.ip %}<div class="text-white-50" style="font-size:.72rem">checked {{ h.ip }}</div>{% endif %}</td>
+          <td class="mono">{{ d.specific_config_file }}</td>
+          <td>{% if lease %}<span class="badge bg-success">{{ lease.state }}</span>
+              <span class="mono">{{ lease.mac }}</span>{% else %}<span class="text-white-50">—</span>{% endif %}</td>
+          {% if h %}
+            <td>{% if h.ping %}<span class="dot bg-success"></span>{% else %}<span class="dot bg-danger"></span>{% endif %}</td>
+            <td>{% if h.ssh %}<span class="dot bg-success"></span>{% else %}<span class="dot bg-danger"></span>{% endif %}</td>
+            <td>
+              {% if h.status == 'VERIFIED' %}<span class="badge bg-success">VERIFIED</span>
+              {% elif 'reachable' in h.status or h.status == 'SSH open' %}<span class="badge bg-warning text-dark">{{ h.status }}</span>
+              {% elif 'mismatch' in h.status %}<span class="badge bg-danger">{{ h.status }}</span>
+              {% else %}<span class="badge bg-secondary">{{ h.status }}</span>{% endif %}
+            </td>
+          {% else %}<td>—</td><td>—</td><td class="text-white-50">not checked</td>{% endif %}
+        </tr>
+        {% else %}<tr><td colspan="11" class="text-white-50">No devices. Add them on the Dashboard.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <details class="glass p-3">
+    <summary class="fw-semibold">How do I know a device provisioned successfully?</summary>
+    <div class="small mt-2">
+      A device is considered <b>successfully provisioned</b> when, after ZTP, it boots into the
+      delivered config and is reachable at its management IP. This page reports it in layers:
+      <ul class="mb-2">
+        <li><b>DHCP lease</b> — the server saw the device and leased it an IP (it reached ZTP at all).</li>
+        <li><b>Ping</b> — the device answers ICMP at its assigned IP (booted, network up).</li>
+        <li><b>SSH</b> — TCP/22 is open (management plane up, config applied far enough to allow SSH).</li>
+        <li><b>VERIFIED</b> — we logged in over SSH and the device's <code>host-name</code> matches the
+            expected hostname → the <i>correct</i> config landed on the <i>correct</i> device.
+            Requires SSH credentials (set Default or per-device on the Dashboard).</li>
+      </ul>
+      Health check targets the <b>Management IP (post-ZTP)</b> if set — this is usually a different
+      subnet than the DHCP range (the device's real mgmt/loopback after the full config loads), and
+      devices may span many subnets. The ZTP server (or wherever this app runs) must have an L3 route
+      to those subnets for ping/SSH to succeed. If no Mgmt IP is set, it falls back to the DHCP IP.
+      The “checked &lt;ip&gt;” line shows which IP was actually probed.
+    </div>
+  </details>
+
+  <footer class="text-center mt-4">Built by {{ author }} &middot; v{{ version }}</footer>
+</div>
+</body>
+</html>

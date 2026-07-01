@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZTP Manager</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%231b6ef3'/%3E%3Ctext%20x='32'%20y='42'%20font-size='30'%20font-family='Arial'%20font-weight='bold'%20fill='white'%20text-anchor='middle'%3EZ+%3C/text%3E%3C/svg%3E">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root { --glass-bg: rgba(255,255,255,.07); --glass-bd: rgba(255,255,255,.15); }
+    body { min-height:100vh; color:#e8edf4; font-size:.95rem;
+      background: radial-gradient(1100px 560px at 8% -12%, #173a6b 0, transparent 60%),
+        radial-gradient(900px 480px at 112% 8%, #38206b 0, transparent 55%), #0a0f1d; }
+    .glass { background:var(--glass-bg); border:1px solid var(--glass-bd);
+      backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+      border-radius:16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+    .glass .form-control,.glass .form-select { background:rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.18); color:#fff; }
+    .glass .form-control::placeholder { color:rgba(255,255,255,.45); }
+    .card-h { font-size:.78rem; letter-spacing:.12em; text-transform:uppercase; color:#8fb6ff; }
+    .chip { background:var(--glass-bg); border:1px solid var(--glass-bd); border-radius:999px;
+      padding:.35rem .9rem; display:inline-flex; gap:.45rem; align-items:center; }
+    .chip b { color:#fff; } .table{ color:#e8edf4; --bs-table-bg:transparent; --bs-table-color:#e8edf4; }
+    .table>:not(caption)>*>* { border-color:rgba(255,255,255,.10); color:#e8edf4; }
+    .table thead th{ color:#9fb3d0; font-weight:600; }
+    select.form-select option, option { background:#13203b; color:#e8edf4; }
+    code,.mono{ color:#9ad0ff; font-family:ui-monospace,Consolas,monospace; font-size:.82rem; }
+    .btn-glass{ background:rgba(255,255,255,.1); border:1px solid var(--glass-bd); color:#fff; }
+    .navbar{ border-bottom:1px solid var(--glass-bd); }
+    .info{ cursor:pointer; color:#8fb6ff; border:1px solid var(--glass-bd); border-radius:50%;
+      width:1.15rem; height:1.15rem; display:inline-flex; align-items:center; justify-content:center;
+      font-size:.7rem; font-style:italic; }
+    summary{ cursor:pointer; } a{ color:#9ad0ff; }
+    footer{ color:rgba(255,255,255,.4); font-size:.8rem; }
+  </style>
+</head>
+<body>
+<nav class="navbar px-4 py-3 mb-4 d-flex justify-content-between">
+  <span class="navbar-brand text-white fw-bold mb-0">ZTP&nbsp;Manager
+    {% if dev_mode %}<span class="badge bg-warning text-dark ms-2 align-middle">DEV</span>{% endif %}</span>
+  <div class="d-flex align-items-center gap-3">
+    <a href="/" class="btn btn-sm btn-glass">Dashboard</a>
+    <a href="/bindings" class="btn btn-sm btn-glass">Bindings &amp; Health</a>
+    <a href="/logs" class="btn btn-sm btn-glass">Logs</a>
+    <span class="text-white-50 small">Opt 66: <code>{{ settings.server_ip }}</code></span>
+    <a href="/preview" target="_blank" class="btn btn-sm btn-outline-info">Preview dhcpd.conf</a>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 pb-4">
+
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <span class="chip"><b>{{ configs|length }}</b> config files</span>
+    <span class="chip"><b>{{ devices|length }}</b> specific devices</span>
+    <span class="chip"><b>{{ profiles|length }}</b> generic profiles</span>
+  </div>
+
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% if msgs %}<div class="mb-3">
+      {% for cat, m in msgs %}<div class="alert alert-{{ cat }} py-2 mb-2" style="white-space:pre-line">{{ m }}</div>{% endfor %}
+    </div>{% endif %}
+  {% endwith %}
+
+  <details class="glass p-3 mb-4">
+    <summary class="text-warning fw-semibold">ZTP Rules — auto-checked per file (see the “Checks” column)</summary>
+    <ol class="small mb-0 mt-2">
+      <li>Config must include <code>set system root-authentication ...</code> or the ZTP commit fails. <i>(auto-checked)</i></li>
+      <li>A full <b>load-override</b> config simply must not <b>enable</b> <code>chassis auto-image-upgrade</code> — a full config normally omits it, so it’s fine. Only configs that explicitly enable it (without a delete) are flagged. <i>(auto-checked)</i></li>
+      <li>Resulting HTTP URL <code>http://{{ settings.server_ip }}/configs/&lt;file&gt;</code> must be &lt; 256 chars. <i>(auto-checked)</i></li>
+      <li>Never run a manual <code>commit</code> on the console while ZTP is in progress. <i>(operator discipline)</i></li>
+    </ol>
+  </details>
+
+  <!-- Settings: DHCP pool + SSH credentials -->
+  <details class="glass p-3 mb-4">
+    <summary class="fw-semibold" style="color:#8fb6ff">DHCP Pool &amp; SSH Credentials</summary>
+    <div class="row g-4 mt-1">
+      <div class="col-lg-7">
+        <div class="card-h mb-2">DHCP Pool (Option 66 server = {{ settings.server_ip }})</div>
+        <form method="post" action="/settings" class="row g-2 align-items-end">
+          <div class="col-sm-4"><label class="form-label small mb-1">Server IP</label>
+            <input name="server_ip" class="form-control" value="{{ settings.server_ip }}" required></div>
+          <div class="col-sm-4"><label class="form-label small mb-1">Subnet</label>
+            <input name="subnet" class="form-control" value="{{ settings.subnet }}" required></div>
+          <div class="col-sm-4"><label class="form-label small mb-1">Netmask</label>
+            <input name="netmask" class="form-control" value="{{ settings.netmask }}" required></div>
+          <div class="col-sm-4"><label class="form-label small mb-1">Range low</label>
+            <input name="range_low" class="form-control" value="{{ settings.range_low }}" required></div>
+          <div class="col-sm-4"><label class="form-label small mb-1">Range high</label>
+            <input name="range_high" class="form-control" value="{{ settings.range_high }}" required></div>
+          <div class="col-sm-4"><button class="btn btn-glass w-100">Save pool</button></div>
+        </form>
+        <div class="form-text text-white-50">Default 19.96.0.0/16 (isolated L2 lab). Server IP becomes Option 66 + gateway.</div>
+      </div>
+      <div class="col-lg-5">
+        <div class="card-h mb-2">SSH Credentials <span class="info" data-bs-toggle="popover"
+            data-bs-title="SSH credentials for health verify"
+            data-bs-content="Used by Bindings &amp; Health to SSH in and confirm the hostname. Set a Default for all, or a per-device/site credential (scope = the device hostname). You can also set per-device creds inline in the device form below. Stored in creds.json (chmod 600), passwords never shown.">i</span></div>
+        <form method="post" action="/set_creds" class="row g-2 align-items-end">
+          <div class="col-12"><label class="form-label small mb-1">Apply to (scope)</label>
+            <select name="scope" class="form-select">
+              <option value="default">Default (all devices)</option>
+              {% for d in devices %}<option value="{{ d.hostname }}">{{ d.hostname }}</option>{% endfor %}
+            </select></div>
+          <div class="col-6"><input name="username" class="form-control" placeholder="username" required></div>
+          <div class="col-6"><input name="password" type="password" class="form-control" placeholder="password" required></div>
+          <div class="col-12"><button class="btn btn-glass w-100">Save credential</button></div>
+        </form>
+        <div class="form-text text-white-50">
+          Default: <b>{{ creds.default or 'not set' }}</b>;
+          per-host: {{ creds.by_host.keys()|list|join(', ') if creds.by_host else 'none' }}
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <!-- Admin login -->
+  <details class="glass p-3 mb-4">
+    <summary class="fw-semibold" style="color:#8fb6ff">Admin Login</summary>
+    <div class="row g-4 mt-1">
+      <div class="col-lg-6">
+        <form method="post" action="/account/change_password" class="row g-2 align-items-end">
+          <div class="col-12"><label class="form-label small mb-1">Current password</label>
+            <input name="current_password" type="password" class="form-control" required autocomplete="current-password"></div>
+          <div class="col-12"><label class="form-label small mb-1">New username <span class="text-white-50">(optional)</span></label>
+            <input name="new_username" class="form-control" autocomplete="off"></div>
+          <div class="col-12"><label class="form-label small mb-1">New password</label>
+            <input name="new_password" type="password" class="form-control" required autocomplete="new-password"></div>
+          <div class="col-12"><button class="btn btn-glass w-100">Update login</button></div>
+        </form>
+        <div class="form-text text-white-50">Default login is <code>admin</code> / <code>admin</code> on first run
+          — change it here before exposing this VM beyond an isolated lab.</div>
+      </div>
+    </div>
+  </details>
+
+  <div class="row g-4">
+    <!-- LEFT: Config files -->
+    <div class="col-lg-4">
+      <div class="glass p-4 h-100">
+        <div class="card-h mb-3">Config Files</div>
+        <form method="post" action="/upload" enctype="multipart/form-data" class="mb-3">
+          <div class="input-group">
+            <input type="file" name="config_file" class="form-control" required>
+            <button class="btn btn-info">Upload</button>
+          </div>
+          <div class="form-text text-white-50">Allowed: {{ allowed_ext }}. Auto-checked for root-auth &amp; auto-image-upgrade.</div>
+        </form>
+        <table class="table table-sm align-middle">
+          <thead><tr><th>File</th><th>Checks</th><th></th></tr></thead>
+          <tbody>
+            {% for c in configs %}
+            {% set issues = config_checks.get(c, []) %}
+            <tr>
+              <td><a href="/configs/{{ c }}" target="_blank" class="mono">{{ c }}</a></td>
+              <td>{% if issues %}<span class="info" style="color:#ffc107;border-color:#ffc107"
+                     data-bs-toggle="popover" data-bs-title="{{ issues|length }} issue(s)"
+                     data-bs-content="{{ issues|join(' | ') }}">!</span>
+                  {% else %}<span class="badge bg-success">OK</span>{% endif %}</td>
+              <td class="text-end"><form method="post" action="/delete_config/{{ c }}"
+                  onsubmit="return confirm('Delete {{ c }}?')"><button class="btn btn-sm btn-outline-danger py-0">×</button></form></td>
+            </tr>{% else %}<tr><td colspan="3" class="text-white-50">No files yet</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="col-lg-8">
+      <!-- Specific devices -->
+      <div class="glass p-4 mb-4">
+        <div class="card-h mb-3 d-flex justify-content-between">
+          <span>Specific Device Mapping</span>
+          <span class="text-lowercase">
+            <a href="/export/devices.csv" class="me-2">export CSV</a>
+            <a href="/export/devices.json">JSON</a>
+          </span>
+        </div>
+        <form method="post" action="/deploy" class="row g-2 align-items-end">
+          <div class="col-sm-3">
+            <label class="form-label small mb-1">Match by
+              <span class="info" data-bs-toggle="popover" data-bs-title="Match method"
+                data-bs-content="By Serial: device is matched on the serial inside DHCP Option 60 (regex, anchored). By MAC: device is matched on its hardware MAC via a host{} declaration (highest precedence). SRX often does NOT send serial in Option 60 — use MAC for those.">i</span></label>
+            <select name="match_method" id="method" class="form-select" onchange="toggleId()">
+              <option value="serial">Serial Number</option>
+              <option value="mac">MAC Address</option>
+            </select>
+          </div>
+          <div class="col-sm-5" id="serial_box">
+            <label class="form-label small mb-1">Serial Number
+              <span class="info" data-bs-toggle="popover" data-bs-title="Serial Number"
+                data-bs-content="Exact device serial as it appears at the END of DHCP Option 60 (e.g. Juniper-ex2300-48p-ZG1234 -> serial ZG1234). Matched as ...~= 'serial$'. Confirm the real Option 60 with: tcpdump -ni IFACE port 67 -v, or the dhcpd log.">i</span></label>
+            <input name="serial_number" id="serial_number" class="form-control" placeholder="ZG1234567890">
+          </div>
+          <div class="col-sm-5 d-none" id="mac_box">
+            <label class="form-label small mb-1">MAC Address
+              <span class="info" data-bs-toggle="popover" data-bs-title="MAC Address"
+                data-bs-content="Format XX:XX:XX:XX:XX:XX. Use the chassis/management MAC the device sends in DHCP. Stored lowercase.">i</span></label>
+            <input name="mac_address" id="mac_address" class="form-control" placeholder="2c:6b:f5:01:02:03"
+                   pattern="^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$">
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">Device type
+              <span class="info" data-bs-toggle="popover" data-bs-title="Device type (label only)"
+                data-bs-content="Free text for YOUR reference (e.g. EX2300, EX2300-48P, SRX320). It is NOT used for matching, so no strict naming is required. Matching uses Serial/MAC/vendor-class only.">i</span></label>
+            <input name="device_type" class="form-control" placeholder="e.g. EX2300-48P">
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">Hostname</label>
+            <input name="hostname" class="form-control" placeholder="edge-hcm-01" required>
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">DHCP IP <span class="text-white-50">(By-MAC)</span>
+              <span class="info" data-bs-toggle="popover" data-bs-title="DHCP IP (fixed-address)"
+                data-bs-content="Only for By-MAC devices: becomes the DHCP fixed-address during ZTP boot. By-Serial devices get a dynamic IP from the range, so leave this blank for them.">i</span></label>
+            <input name="ip_address" class="form-control" placeholder="192.168.1.120">
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">Management IP <span class="text-white-50">(post-ZTP)</span>
+              <span class="info" data-bs-toggle="popover" data-bs-title="Management IP after provisioning"
+                data-bs-content="The IP the device will have AFTER loading its full config — often a different/other subnet than the DHCP range (or loopback). Health check pings/SSH this IP. May be in any subnet, as long as the server has a route to it. Leave blank to reuse the DHCP IP.">i</span></label>
+            <input name="mgmt_ip" class="form-control" placeholder="10.0.30.5 (any subnet)">
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">SSH user <span class="text-white-50">(optional)</span>
+              <span class="info" data-bs-toggle="popover" data-bs-title="Per-device SSH credential"
+                data-bs-content="Optional. If set, saved as this device's credential (overrides the Default) for health verify. Leave blank to use the Default credential.">i</span></label>
+            <input name="ssh_user" class="form-control" placeholder="root" autocomplete="off">
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">SSH pass <span class="text-white-50">(optional)</span></label>
+            <input name="ssh_pass" type="password" class="form-control" autocomplete="new-password">
+          </div>
+          <div class="col-sm-8">
+            <label class="form-label small mb-1">Config file <span class="text-white-50">(optional)</span>
+              <span class="info" data-bs-toggle="popover" data-bs-title="Config file (optional)"
+                data-bs-content="Leave blank to let this device use the SHARED Generic Profile for its vendor-class — no per-device file needed. Pick a file only when this device needs its own specific config (then a By-MAC device also needs a DHCP IP). Devices with no file are still tracked in Bindings &amp; Health.">i</span></label>
+            <select name="specific_config_file" class="form-select">
+              <option value="">— none: use shared Generic Profile —</option>
+              {% for c in configs %}<option>{{ c }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-sm-4 d-flex align-items-end"><button class="btn btn-success w-100">Save &amp; Deploy</button></div>
+        </form>
+
+        <details class="mt-3"><summary class="small text-white-50">Bulk import devices (CSV / JSON)</summary>
+          <form method="post" action="/import/devices" enctype="multipart/form-data" class="row g-2 mt-1 align-items-end">
+            <div class="col-sm-6"><input type="file" name="import_file" accept=".csv,.json" class="form-control form-control-sm" required></div>
+            <div class="col-sm-3"><select name="mode" class="form-select form-select-sm"><option value="merge">merge</option><option value="replace">replace</option></select></div>
+            <div class="col-sm-3"><button class="btn btn-sm btn-glass w-100">Import</button></div>
+            <div class="form-text text-white-50">Columns: match_method, serial_number, mac_address, device_type, hostname, ip_address, mgmt_ip, specific_config_file</div>
+          </form>
+        </details>
+
+        <table class="table table-sm align-middle mt-3 mb-0">
+          <thead><tr><th>Method</th><th>Identifier</th><th>Type</th><th>Hostname</th><th>DHCP IP</th><th>Mgmt IP</th><th>Config</th><th></th></tr></thead>
+          <tbody>
+            {% for d in devices %}<tr>
+              <td><span class="badge {{ 'bg-info' if d.match_method=='serial' else 'bg-secondary' }}">{{ d.match_method }}</span></td>
+              <td class="mono">{{ d.serial_number or d.mac_address }}</td>
+              <td>{{ d.device_type }}</td><td>{{ d.hostname }}</td>
+              <td class="mono">{{ d.ip_address or '—' }}</td><td class="mono">{{ d.mgmt_ip or '—' }}</td>
+              <td class="mono">{{ d.specific_config_file }}</td>
+              <td><form method="post" action="/delete/{{ d.hostname }}"><button class="btn btn-sm btn-outline-danger py-0">×</button></form></td>
+            </tr>{% else %}<tr><td colspan="8" class="text-white-50">No devices yet</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Generic profiles -->
+      <div class="glass p-4">
+        <div class="card-h mb-3 d-flex justify-content-between">
+          <span>Generic Profiles <span class="text-white-50 text-lowercase">— fallback by vendor-class</span></span>
+          <span class="text-lowercase"><a href="/export/profiles.csv" class="me-2">export CSV</a><a href="/export/profiles.json">JSON</a></span>
+        </div>
+        <form method="post" action="/add_profile" class="row g-2 align-items-end">
+          <div class="col-sm-3">
+            <label class="form-label small mb-1">Label</label>
+            <input name="label" class="form-control" placeholder="EX family">
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">Vendor-class match
+              <span class="info" data-bs-toggle="popover" data-bs-title="Vendor-class (Option 60)"
+                data-bs-content="MUST be the real DHCP Option 60 string the device sends, or a prefix of it (e.g. Juniper-ex2300). Used as a regex 'contains' match (~=). This one DOES need correct naming — capture it via tcpdump/dhcpd log. The Device-type label above does not.">i</span></label>
+            <input name="vendor_class" class="form-control" placeholder="Juniper-ex2300" required>
+          </div>
+          <div class="col-sm-3">
+            <label class="form-label small mb-1">Config file</label>
+            <select name="config_file" class="form-select" required>
+              <option value="">— select —</option>
+              {% for c in configs %}<option>{{ c }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-sm-2"><button class="btn btn-glass w-100">Add</button></div>
+        </form>
+
+        <details class="mt-3"><summary class="small text-white-50">Bulk import profiles (CSV / JSON)</summary>
+          <form method="post" action="/import/profiles" enctype="multipart/form-data" class="row g-2 mt-1 align-items-end">
+            <div class="col-sm-6"><input type="file" name="import_file" accept=".csv,.json" class="form-control form-control-sm" required></div>
+            <div class="col-sm-3"><select name="mode" class="form-select form-select-sm"><option value="merge">merge</option><option value="replace">replace</option></select></div>
+            <div class="col-sm-3"><button class="btn btn-sm btn-glass w-100">Import</button></div>
+            <div class="form-text text-white-50">Columns: label, vendor_class, config_file</div>
+          </form>
+        </details>
+
+        <table class="table table-sm align-middle mt-3 mb-0">
+          <thead><tr><th>Label</th><th>Vendor-class (~=)</th><th>Config</th><th></th></tr></thead>
+          <tbody>
+            {% for p in profiles %}<tr>
+              <td>{{ p.label }}</td><td class="mono">{{ p.vendor_class }}</td><td class="mono">{{ p.config_file }}</td>
+              <td><form method="post" action="/delete_profile/{{ loop.index0 }}"><button class="btn btn-sm btn-outline-danger py-0">×</button></form></td>
+            </tr>{% else %}<tr><td colspan="4" class="text-white-50">No profiles yet</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <footer class="text-center mt-4">Built by {{ author }} &middot; v{{ version }}</footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function toggleId(){
+  const isSerial = document.getElementById('method').value === 'serial';
+  document.getElementById('serial_box').classList.toggle('d-none', !isSerial);
+  document.getElementById('mac_box').classList.toggle('d-none', isSerial);
+  document.getElementById('serial_number').required = isSerial;
+  document.getElementById('mac_address').required = !isSerial;
+}
+toggleId();
+document.querySelectorAll('[data-bs-toggle="popover"]').forEach(el =>
+  new bootstrap.Popover(el, {trigger:'focus hover', html:false}));
+</script>
+</body>
+</html>

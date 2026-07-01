@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZTP Manager — Logs</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%231b6ef3'/%3E%3Ctext%20x='32'%20y='42'%20font-size='30'%20font-family='Arial'%20font-weight='bold'%20fill='white'%20text-anchor='middle'%3EZ+%3C/text%3E%3C/svg%3E">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { min-height:100vh; color:#e8edf4; font-size:.95rem;
+      background: radial-gradient(1100px 560px at 8% -12%, #173a6b 0, transparent 60%),
+        radial-gradient(900px 480px at 112% 8%, #38206b 0, transparent 55%), #0a0f1d; }
+    .glass { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.15);
+      backdrop-filter:blur(16px); border-radius:16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+    .table{ color:#e8edf4; --bs-table-bg:transparent; --bs-table-color:#e8edf4; }
+    .table>:not(caption)>*>*{ border-color:rgba(255,255,255,.10); color:#e8edf4; }
+    .table thead th{ color:#9fb3d0; font-weight:600; }
+    .card-h{ font-size:.78rem; letter-spacing:.12em; text-transform:uppercase; color:#8fb6ff; }
+    .btn-glass{ background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.15); color:#fff; }
+    .navbar{ border-bottom:1px solid rgba(255,255,255,.15); } a{ color:#9ad0ff; }
+    pre.log{ background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.12); border-radius:10px;
+      color:#cfe3ff; padding:.8rem; max-height:320px; overflow:auto; font-size:.78rem; }
+    code,.mono{ color:#9ad0ff; font-family:ui-monospace,Consolas,monospace; font-size:.82rem; }
+    footer{ color:rgba(255,255,255,.4); font-size:.8rem; }
+  </style>
+</head>
+<body>
+<nav class="navbar px-4 py-3 mb-4 d-flex justify-content-between">
+  <span class="navbar-brand text-white fw-bold mb-0">ZTP&nbsp;Manager — Logs</span>
+  <div class="d-flex align-items-center gap-2">
+    <a href="/" class="btn btn-sm btn-glass">Dashboard</a>
+    <a href="/bindings" class="btn btn-sm btn-glass">Bindings &amp; Health</a>
+    <a href="/logs" class="btn btn-sm btn-glass">Refresh</a>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 pb-4">
+
+  <!-- Config fetches (the key ZTP signal) -->
+  <div class="glass p-4 mb-4">
+    <div class="card-h mb-2 d-flex justify-content-between">
+      <span>Config fetches — which device downloaded which config (nginx {{ nginx_path }})</span>
+      <a href="/logs/export/nginx" class="text-lowercase">export</a>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Time</th><th>Client IP</th><th>Serial / Device</th><th>Config file</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for f in fetches %}
+          <tr><td class="mono">{{ f.time }}</td><td class="mono">{{ f.client }}</td>
+              <td class="mono">{{ f.device or '—' }}</td>
+              <td class="mono">{{ f.file }}</td>
+              <td><span class="badge {{ 'bg-success' if f.status=='200' else 'bg-danger' }}">{{ f.status }}</span></td></tr>
+          {% else %}<tr><td colspan="5" class="text-white-50">No fetches yet (nginx log empty or not readable). A 200 here = device pulled its config.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-lg-6">
+      <div class="glass p-4 h-100">
+        <div class="card-h mb-2 d-flex justify-content-between">
+          <span>DHCP log — dhcpd ({{ syslog_path }})</span>
+          <a href="/logs/export/dhcp" class="text-lowercase">export</a>
+        </div>
+        <pre class="log mb-0">{{ dhcp_log or '(empty / not readable — needs access to ' ~ syslog_path ~ ')' }}</pre>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="glass p-4 h-100">
+        <div class="card-h mb-2 d-flex justify-content-between">
+          <span>DHCP leases ({{ leases_path }})</span>
+          <a href="/logs/export/leases" class="text-lowercase">export</a>
+        </div>
+        <pre class="log mb-0">{{ leases_log or '(empty / not readable)' }}</pre>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-white-50 small mt-3">Troubleshooting flow: device sends DHCP DISCOVER (DHCP log) →
+     gets a lease (leases) → fetches its config over HTTP (Config fetches, status 200) → commits.
+     A missing fetch or a non-200 status pinpoints where ZTP stalled.</p>
+
+  <footer class="text-center mt-4">Built by {{ author }} &middot; v{{ version }}</footer>
+</div>
+</body>
+</html>

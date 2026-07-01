@@ -1,0 +1,26 @@
+[Unit]
+Description=ZTP Manager (Flask + waitress)
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root so it can write /etc/dhcp/dhcpd.conf and restart isc-dhcp-server/nginx.
+WorkingDirectory=/opt/ztp-app
+Environment=ZTP_WEBROOT=/var/www/html/configs
+Environment=ZTP_DHCPD=/etc/dhcp/dhcpd.conf
+Environment=ZTP_LEASES=/var/lib/dhcp/dhcpd.leases
+Environment=ZTP_HOST=0.0.0.0
+Environment=ZTP_PORT=8080
+# Default admin login is admin/admin on first start — change it from the UI
+# (Dashboard -> Admin Login) right after install. To pin a different first-run
+# login instead, uncomment and edit below, then `systemctl daemon-reload &&
+# systemctl restart ztp-app` (only takes effect if admin_auth.json doesn't exist yet).
+#Environment=ZTP_ADMIN_USER=admin
+#Environment=ZTP_ADMIN_PASSWORD=change-me
+ExecStart=/opt/ztp-app/.venv/bin/python /opt/ztp-app/app.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
