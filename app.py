@@ -28,6 +28,7 @@ import re
 import secrets
 import shutil
 import socket
+import tempfile
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -56,13 +57,13 @@ DHCP_INTERFACE_FILE = Path(os.environ.get("ZTP_DHCP_INTERFACE_FILE", "/etc/defau
 DEV_MODE     = os.environ.get("ZTP_DEV", "0") == "1"
 SSH_PORT     = int(os.environ.get("ZTP_SSH_PORT", "22"))
 
-# Default DHCP pool — 19.96.0.0/16 (per request; isolated L2 lab). Editable in the UI.
+# Default DHCP pool — RFC1918 192.168.250.0/24. Editable in the UI.
 DEFAULT_SETTINGS = {
-    "server_ip": os.environ.get("ZTP_VM_IP", "19.96.0.1"),
-    "subnet":    os.environ.get("ZTP_SUBNET", "19.96.0.0"),
-    "netmask":   os.environ.get("ZTP_NETMASK", "255.255.0.0"),
-    "range_low": os.environ.get("ZTP_RANGE_LOW", "19.96.0.10"),
-    "range_high":os.environ.get("ZTP_RANGE_HIGH", "19.96.255.254"),
+    "server_ip": os.environ.get("ZTP_VM_IP", "192.168.250.1"),
+    "subnet":    os.environ.get("ZTP_SUBNET", "192.168.250.0"),
+    "netmask":   os.environ.get("ZTP_NETMASK", "255.255.255.0"),
+    "range_low": os.environ.get("ZTP_RANGE_LOW", "192.168.250.10"),
+    "range_high":os.environ.get("ZTP_RANGE_HIGH", "192.168.250.254"),
     "internet_interface": os.environ.get("ZTP_INTERNET_INTERFACE", ""),
     "ztp_interface":      os.environ.get("ZTP_INTERFACE", ""),
 }
@@ -75,13 +76,43 @@ VENDOR_CLASS_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 MAC_RE          = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 PROFILE_REGEX_TEXT_RE = re.compile(r'^[^\r\n"]{1,160}$')
 DEVICE_FIELDS = ["match_method", "serial_number", "mac_address", "device_type",
-                 "hostname", "ip_address", "mgmt_ip", "specific_config_file"]
+                 "hostname", "ip_address", "mgmt_ip", "specific_config_file",
+                 "option60_confirmed"]
 PROFILE_MATCH_MODES = ["contains", "regex"]
-PROFILE_FIELDS = ["label", "vendor_class", "match_mode", "config_file"]
+PROFILE_FIELDS = ["label", "vendor_class", "match_mode", "config_file", "option60_confirmed"]
 SETTINGS_FIELDS = ["server_ip", "subnet", "netmask", "range_low", "range_high",
                    "internet_interface", "ztp_interface"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.05"   # build version yy.mm.dd
+VERSION = "26.08.06"   # build version yy.mm.dd; safety hardening release
+
+
+class JsonDataError(RuntimeError):
+    """A runtime JSON file is unreadable; never silently treat it as empty."""
+
+
+def _atomic_write_json(path: Path, data, mode: int = 0o600) -> None:
+    """Backup and atomically replace a JSON runtime file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = path.with_name(path.name + ".bak")
+    tmp_name = None
+    try:
+        if path.exists():
+            shutil.copy2(path, backup)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    except (OSError, TypeError, ValueError) as exc:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        raise JsonDataError(f"Cannot safely write {path}: {exc}") from exc
 
 def _load_secret_key() -> str:
     """ZTP_SECRET env wins; otherwise persist a random key to SECRET_FILE (chmod 600)
@@ -164,24 +195,46 @@ def _require_auth():
                         {"WWW-Authenticate": 'Basic realm="ZTP Manager"'})
 
 
+@app.errorhandler(JsonDataError)
+def _json_data_error(exc):
+    """Show runtime JSON corruption as an actionable UI error, never as empty data."""
+    return Response(f"JSON error; no deployment performed: {exc}\n", 500,
+                    mimetype="text/plain")
+
+
 # --------------------------------------------------------- json helpers -----
 def _read_json(path: Path, default):
     if not path.exists():
         return default
     try:
-        return json.loads(path.read_text() or json.dumps(default))
-    except json.JSONDecodeError:
-        return default
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise JsonDataError(f"Cannot read valid JSON from {path}: {exc}") from exc
 
 
-def read_devices():  return _read_json(DEVICES_JSON, [])
-def write_devices(rows): DEVICES_JSON.write_text(json.dumps(rows, indent=2))
+def _validate_string_records(path: Path, rows, kind: str) -> None:
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise JsonDataError(f"Expected {path} to contain a JSON array of {kind} objects.")
+    for row in rows:
+        if any(not isinstance(value, str) for value in row.values()):
+            raise JsonDataError(f"Expected all values in {path} to be strings.")
+
+
+def read_devices():
+    rows = _read_json(DEVICES_JSON, [])
+    _validate_string_records(DEVICES_JSON, rows, "device")
+    for row in rows:
+        row.setdefault("option60_confirmed", "")
+    return rows
+def write_devices(rows): _atomic_write_json(DEVICES_JSON, rows)
 def read_profiles():
     rows = _read_json(PROFILES_JSON, [])
+    _validate_string_records(PROFILES_JSON, rows, "profile")
     for row in rows:
         row.setdefault("match_mode", "contains")
+        row.setdefault("option60_confirmed", "")
     return rows
-def write_profiles(rows): PROFILES_JSON.write_text(json.dumps(rows, indent=2))
+def write_profiles(rows): _atomic_write_json(PROFILES_JSON, rows)
 
 
 def _valid_ipv4(value: str) -> bool:
@@ -190,6 +243,10 @@ def _valid_ipv4(value: str) -> bool:
         return True
     except (ipaddress.AddressValueError, ValueError):
         return False
+
+
+def _confirmed(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "yes", "true", "on"}
 
 
 def _serial_overlap(left: str, right: str) -> bool:
@@ -222,13 +279,15 @@ def mapping_issues(devices=None, profiles=None) -> list[str]:
         host = row.get("hostname") or "(unnamed device)"
         serial = row.get("serial_number", "")
         mac = row.get("mac_address", "").lower()
-        if row.get("match_method") == "serial" and serial:
+        if serial:
             if not SERIAL_RE.fullmatch(serial):
                 issues.append(f"{host}: Serial must be alphanumeric.")
             if serial in serials:
                 issues.append(f"Duplicate Serial '{serial}' on {serials[serial]} and {host}.")
             serials[serial] = host
-        if row.get("match_method") == "mac" and mac:
+            if row.get("match_method") == "serial" and not _confirmed(row.get("option60_confirmed")):
+                issues.append(f"{host}: Serial rule is not confirmed against a real DHCP Option 60 capture.")
+        if mac:
             if not MAC_RE.fullmatch(mac):
                 issues.append(f"{host}: MAC must use aa:bb:cc:dd:ee:ff format.")
             if mac in macs:
@@ -248,6 +307,8 @@ def mapping_issues(devices=None, profiles=None) -> list[str]:
         vendor = profile.get("vendor_class", "")
         mode = profile.get("match_mode", "contains")
         label = profile.get("label") or vendor or "(unnamed profile)"
+        if not _confirmed(profile.get("option60_confirmed")):
+            issues.append(f"{label}: Generic Profile is not confirmed against a real DHCP Option 60 capture.")
         if mode not in PROFILE_MATCH_MODES:
             issues.append(f"{label}: unknown match mode '{mode}'.")
         elif mode == "contains" and not VENDOR_CLASS_RE.fullmatch(vendor):
@@ -269,9 +330,33 @@ def mapping_issues(devices=None, profiles=None) -> list[str]:
     return issues
 
 
-def validate_device_row(row: dict, existing=None) -> list[str]:
+def _fixed_ip_errors(value: str, settings: dict, label: str = "DHCP IP") -> list[str]:
+    if not value:
+        return []
+    errors = []
+    try:
+        fixed = ipaddress.IPv4Address(value)
+        network = ipaddress.IPv4Network(f"{settings['subnet']}/{settings['netmask']}", strict=False)
+        low = ipaddress.IPv4Address(settings["range_low"])
+        high = ipaddress.IPv4Address(settings["range_high"])
+        server = ipaddress.IPv4Address(settings["server_ip"])
+    except (KeyError, ipaddress.AddressValueError, ipaddress.NetmaskValueError, ValueError) as exc:
+        return [f"{label} cannot be checked against the ZTP subnet: {exc}."]
+    if fixed not in network:
+        errors.append(f"{label} {fixed} must be inside ZTP subnet {network}.")
+    if fixed == server:
+        errors.append(f"{label} {fixed} must not equal Server IP.")
+    if low <= fixed <= high:
+        errors.append(f"{label} {fixed} must not be inside the dynamic DHCP range {low}-{high}.")
+    if fixed not in network.hosts():
+        errors.append(f"{label} {fixed} cannot be the network or broadcast address.")
+    return errors
+
+
+def validate_device_row(row: dict, existing=None, settings=None) -> list[str]:
     """Validate form/import data before it can change the generated DHCP rules."""
     existing = read_devices() if existing is None else existing
+    settings = read_settings() if settings is None else settings
     errors = []
     method = row.get("match_method", "")
     host = row.get("hostname", "")
@@ -281,9 +366,11 @@ def validate_device_row(row: dict, existing=None) -> list[str]:
         errors.append("Hostname is required.")
     serial = row.get("serial_number", "")
     mac = row.get("mac_address", "").lower()
-    if method == "serial" and not SERIAL_RE.fullmatch(serial):
+    if serial and not SERIAL_RE.fullmatch(serial):
         errors.append("Serial must contain letters and digits only.")
-    if method == "mac" and not MAC_RE.fullmatch(mac):
+    if method == "serial" and not _confirmed(row.get("option60_confirmed")):
+        errors.append("Serial matching requires confirmation that the serial is at the end of DHCP Option 60.")
+    if mac and not MAC_RE.fullmatch(mac):
         errors.append("MAC must use aa:bb:cc:dd:ee:ff format.")
     if method == "mac" and row.get("specific_config_file") and not row.get("ip_address"):
         errors.append("DHCP IP is required for a By-MAC device with its own config file.")
@@ -291,23 +378,31 @@ def validate_device_row(row: dict, existing=None) -> list[str]:
         value = row.get(field, "")
         if value and not _valid_ipv4(value):
             errors.append(f"{field} must be a valid IPv4 address.")
+    errors.extend(_fixed_ip_errors(row.get("ip_address", ""), settings))
+    if row.get("specific_config_file"):
+        errors.extend(config_file_errors(row["specific_config_file"], settings=settings))
     for other in existing:
-        if other.get("hostname") == host:
-            continue
-        if method == "serial" and serial and other.get("match_method") == "serial":
+        if host and other.get("hostname") == host:
+            errors.append(f"Hostname '{host}' is already mapped to another device.")
+        if serial:
             other_serial = other.get("serial_number", "")
             if serial == other_serial:
                 errors.append(f"Serial '{serial}' is already mapped to {other.get('hostname')}.")
-            elif _serial_overlap(serial, other_serial):
+            elif other_serial and _serial_overlap(serial, other_serial):
                 errors.append(f"Serial '{serial}' overlaps '{other_serial}' on {other.get('hostname')}.")
-        if method == "mac" and mac and other.get("match_method") == "mac":
+        if mac:
             if mac == other.get("mac_address", "").lower():
                 errors.append(f"MAC '{mac}' is already mapped to {other.get('hostname')}.")
+        if row.get("ip_address") and row.get("ip_address") == other.get("ip_address"):
+            errors.append(f"DHCP IP '{row['ip_address']}' is already mapped to {other.get('hostname')}.")
+        if row.get("mgmt_ip") and row.get("mgmt_ip") == other.get("mgmt_ip"):
+            errors.append(f"Management IP '{row['mgmt_ip']}' is already mapped to {other.get('hostname')}.")
     return errors
 
 
-def validate_profile_row(profile: dict, existing=None) -> list[str]:
+def validate_profile_row(profile: dict, existing=None, settings=None) -> list[str]:
     existing = read_profiles() if existing is None else existing
+    settings = read_settings() if settings is None else settings
     errors = []
     vendor = profile.get("vendor_class", "")
     mode = profile.get("match_mode", "contains")
@@ -325,6 +420,10 @@ def validate_profile_row(profile: dict, existing=None) -> list[str]:
                 re.compile(vendor)
             except re.error as exc:
                 errors.append(f"Regex is invalid: {exc}.")
+    if not _confirmed(profile.get("option60_confirmed")):
+        errors.append("Generic Profile requires confirmation from a real DHCP Option 60 capture.")
+    if profile.get("config_file"):
+        errors.extend(config_file_errors(profile["config_file"], settings=settings))
     for other in existing:
         other_vendor = other.get("vendor_class", "")
         other_mode = other.get("match_mode", "contains")
@@ -337,12 +436,17 @@ def validate_profile_row(profile: dict, existing=None) -> list[str]:
 
 def read_settings() -> dict:
     s = dict(DEFAULT_SETTINGS)
-    s.update({k: v for k, v in _read_json(SETTINGS_JSON, {}).items() if k in SETTINGS_FIELDS and v})
+    raw = _read_json(SETTINGS_JSON, {})
+    if not isinstance(raw, dict):
+        raise JsonDataError(f"Expected {SETTINGS_JSON} to contain a JSON object.")
+    if any(not isinstance(value, str) for value in raw.values()):
+        raise JsonDataError(f"Expected all values in {SETTINGS_JSON} to be strings.")
+    s.update({k: v for k, v in raw.items() if k in SETTINGS_FIELDS and v})
     return s
 
 
 def write_settings(s: dict):
-    SETTINGS_JSON.write_text(json.dumps({k: s.get(k, "") for k in SETTINGS_FIELDS}, indent=2))
+    _atomic_write_json(SETTINGS_JSON, {k: s.get(k, "") for k in SETTINGS_FIELDS})
 
 
 def netmask_prefix_length(netmask: str) -> str:
@@ -543,11 +647,17 @@ def network_checks(settings: dict | None = None) -> list[str]:
             f"ERROR: Server IP {s['server_ip']} is not assigned to ZTP interface '{ztp}' "
             f"({info['address_text']})."
         )
+    if info.get("lower_up") and info.get("addresses"):
+        messages.append("WARN: Verify that no other DHCP server is active on this ZTP L2/VLAN segment.")
     return messages
 
 
 def _network_errors(settings: dict | None = None) -> list[str]:
     return [m for m in network_checks(settings) if m.startswith("ERROR:")]
+
+
+def _network_warnings(settings: dict | None = None) -> list[str]:
+    return [m for m in network_checks(settings) if m.startswith("WARN:")]
 
 
 def apply_dhcp_interface(name: str) -> tuple[bool, str]:
@@ -579,13 +689,7 @@ def read_creds() -> dict:
 
 
 def write_creds(data: dict):
-    fd = os.open(CREDS_JSON, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
-    try:
-        os.chmod(CREDS_JSON, 0o600)
-    except OSError:
-        pass
+    _atomic_write_json(CREDS_JSON, data, mode=0o600)
 
 
 def set_cred(scope: str, user: str, password: str):
@@ -622,7 +726,7 @@ def list_configs():
         return []
 
 
-def check_config_text(text: str, fname: str = "") -> list[str]:
+def check_config_text(text: str, fname: str = "", settings: dict | None = None) -> list[str]:
     """Override-aware auto-checks. Full load-override configs are fine without a delete stmt."""
     low = text.lower()
     issues = []
@@ -630,13 +734,30 @@ def check_config_text(text: str, fname: str = "") -> list[str]:
         issues.append("no root-authentication -> ZTP commit will FAIL")
     enables_aiu = bool(re.search(r"set\s+chassis\s+auto-image-upgrade", low) or
                        re.search(r"chassis\s*\{[^}]*auto-image-upgrade\s*;", low, re.S))
-    if enables_aiu and "delete chassis auto-image-upgrade" not in low:
+    if enables_aiu:
         issues.append("enables 'chassis auto-image-upgrade' -> device will re-enter ZTP loop")
     if fname:
-        url = f"http://{read_settings()['server_ip']}/configs/{fname}"
+        url = f"http://{(settings or read_settings())['server_ip']}/configs/{fname}"
         if len(url) >= URL_MAX:
             issues.append(f"config URL is {len(url)} chars (>= {URL_MAX})")
     return issues
+
+
+def config_file_errors(fname: str, settings: dict | None = None) -> list[str]:
+    """Validate a mapped config before any DHCP candidate can be deployed."""
+    if not fname:
+        return []
+    if Path(fname).name != fname or not _allowed(fname):
+        return [f"Config file '{fname}' is not an allowed .txt/.conf filename."]
+    path = NGINX_DIR / fname
+    if not path.is_file():
+        return [f"Config file '{fname}' does not exist in {NGINX_DIR}."]
+    try:
+        content = path.read_text(errors="replace")
+    except (OSError, UnicodeError) as exc:
+        return [f"Config file '{fname}' cannot be read: {exc}."]
+    issues = check_config_text(content, fname, settings=settings)
+    return [f"Config '{fname}': {issue}." for issue in issues]
 
 
 def config_status(fname: str) -> list[str]:
@@ -668,11 +789,13 @@ def split_devices(rows):
     return serial, mac
 
 
-def generate_dhcpd() -> str:
-    s = read_settings()
-    serial_devices, mac_devices = split_devices(read_devices())
+def generate_dhcpd(settings=None, devices=None, profiles=None) -> str:
+    s = read_settings() if settings is None else settings
+    devices = read_devices() if devices is None else devices
+    profile_rows = read_profiles() if profiles is None else profiles
+    serial_devices, mac_devices = split_devices(devices)
     profiles = []
-    for profile in read_profiles():
+    for profile in profile_rows:
         item = dict(profile)
         item["match_expression"] = profile_match_expression(item)
         profiles.append(item)
@@ -682,34 +805,126 @@ def generate_dhcpd() -> str:
         router=s["server_ip"], range_low=s["range_low"], range_high=s["range_high"])
 
 
-def deploy_dhcpd(text: str):
-    settings = read_settings()
+def deployment_validation(settings=None, devices=None, profiles=None) -> list[str]:
+    """Run every safety gate before a DHCP candidate is allowed to replace production."""
+    settings = read_settings() if settings is None else settings
+    devices = read_devices() if devices is None else devices
+    profiles = read_profiles() if profiles is None else profiles
+    errors = list(validate_dhcp_pool(settings))
     if not DEV_MODE:
-        errors = _network_errors(settings)
-        if errors:
-            return False, "Network readiness failed; DHCP was not restarted:\n" + "\n".join(errors)
+        errors.extend(_network_errors(settings))
+    for row in devices:
+        others = [item for item in devices if item is not row]
+        errors.extend(validate_device_row(row, others, settings=settings))
+    for profile in profiles:
+        others = [item for item in profiles if item is not profile]
+        errors.extend(validate_profile_row(profile, others, settings=settings))
+    return list(dict.fromkeys(errors))
+
+
+def _restore_dhcp_conf(backup: Path) -> str:
+    try:
+        if backup.exists():
+            tmp = DHCPD_CONF.with_name(DHCPD_CONF.name + ".rollback.tmp")
+            shutil.copy2(backup, tmp)
+            os.replace(tmp, DHCPD_CONF)
+        else:
+            DHCPD_CONF.unlink(missing_ok=True)
+        return ""
+    except OSError as exc:
+        return f"DHCP config rollback failed: {exc}"
+
+
+def _restore_path_from_backup(path: Path, backup: Path) -> str:
+    if not backup.exists():
+        return ""
+    try:
+        tmp = path.with_name(path.name + ".rollback.tmp")
+        shutil.copy2(backup, tmp)
+        os.replace(tmp, path)
+        return ""
+    except OSError as exc:
+        return f"Rollback failed for {path}: {exc}"
+
+
+def _restart_dhcp_service() -> tuple[bool, str]:
+    """Restart only ISC DHCP and return a useful error instead of raising."""
+    cmd = ["systemctl", "restart", "isc-dhcp-server"]
+    if os.geteuid() != 0:
+        cmd = ["sudo"] + cmd
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if result.returncode == 0:
+        return True, ""
+    return False, (result.stderr or result.stdout or "unknown restart error").strip()
+
+
+def deploy_dhcpd(text: str, settings=None, devices=None, profiles=None):
+    """Validate, syntax-check, atomically replace and restart DHCP with rollback."""
+    try:
+        settings = read_settings() if settings is None else settings
+        devices = read_devices() if devices is None else devices
+        profiles = read_profiles() if profiles is None else profiles
+        errors = deployment_validation(settings, devices, profiles)
+    except JsonDataError as exc:
+        return False, f"JSON error; deploy stopped: {exc}"
+    if errors:
+        return False, "Deployment blocked:\n" + "\n".join(errors)
+    if not shutil.which("dhcpd"):
+        return False, "Deployment blocked: dhcpd is not installed; candidate syntax cannot be checked."
+    if not DEV_MODE and not shutil.which("systemctl"):
+        return False, "Deployment blocked: systemctl is not available; service rollback cannot be guaranteed."
     try:
         DHCPD_CONF.parent.mkdir(parents=True, exist_ok=True)
-        DHCPD_CONF.write_text(text)
-    except PermissionError:
-        return False, f"Cannot write {DHCPD_CONF} (need sudo?)."
-    if shutil.which("dhcpd"):
-        chk = subprocess.run(["dhcpd", "-t", "-cf", str(DHCPD_CONF)], capture_output=True, text=True)
-        if chk.returncode != 0:
-            return False, f"dhcpd -t FAILED — not restarting:\n{chk.stderr.strip()}"
+        fd, candidate_name = tempfile.mkstemp(prefix=f".{DHCPD_CONF.name}.", suffix=".candidate",
+                                              dir=DHCPD_CONF.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        candidate = Path(candidate_name)
+        check = subprocess.run(["dhcpd", "-t", "-cf", str(candidate)], capture_output=True, text=True)
+        if check.returncode != 0:
+            candidate.unlink(missing_ok=True)
+            detail = (check.stderr or check.stdout or "unknown syntax error").strip()
+            return False, f"dhcpd -t FAILED; live config unchanged:\n{detail}"
+        backup = DHCPD_CONF.with_name(DHCPD_CONF.name + ".ztp-app.bak")
+        if DHCPD_CONF.exists():
+            shutil.copy2(DHCPD_CONF, backup)
+        os.replace(candidate, DHCPD_CONF)
+    except (OSError, JsonDataError) as exc:
+        try:
+            if "candidate" in locals():
+                candidate.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False, f"DHCP candidate was not installed: {exc}"
+
     if DEV_MODE:
-        return True, "DEV_MODE: dhcpd.conf written, service restart skipped."
-    ok, msg = apply_dhcp_interface(settings.get("ztp_interface", ""))
+        return True, f"DEV_MODE: candidate installed atomically; service restart skipped. Backup: {backup}."
+
+    ok, interface_msg = apply_dhcp_interface(settings.get("ztp_interface", ""))
     if not ok:
-        return False, msg
-    if not shutil.which("systemctl"):
-        return True, "dhcpd.conf written (no systemctl here)."
-    cmd = ["systemctl", "restart", "isc-dhcp-server", "nginx"]
-    if os.geteuid() != 0:
-        cmd = ["sudo"] + cmd     # only needed when the app isn't already root
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    return (r.returncode == 0,
-            "Services restarted." if r.returncode == 0 else f"Restart FAILED:\n{r.stderr.strip()}")
+        rollback_msg = _restore_dhcp_conf(backup)
+        rollback_msg = " ".join(part for part in (rollback_msg,
+            _restore_path_from_backup(DHCP_INTERFACE_FILE,
+                DHCP_INTERFACE_FILE.with_name(DHCP_INTERFACE_FILE.name + ".ztp-app.bak"))) if part)
+        return False, f"DHCP interface update failed: {interface_msg}. {rollback_msg}".strip()
+
+    ok, detail = _restart_dhcp_service()
+    if ok:
+        return True, f"DHCP deployed and isc-dhcp-server restarted. Backup: {backup}."
+
+    rollback_msg = _restore_dhcp_conf(backup)
+    rollback_msg = " ".join(part for part in (rollback_msg,
+        _restore_path_from_backup(DHCP_INTERFACE_FILE,
+            DHCP_INTERFACE_FILE.with_name(DHCP_INTERFACE_FILE.name + ".ztp-app.bak"))) if part)
+    restored, restore_error = _restart_dhcp_service()
+    restore_detail = f" DHCP service rollback restart failed: {restore_error}" if not restored else ""
+    return False, (f"isc-dhcp-server restart failed; DHCP config rolled back. {rollback_msg}"
+                   f"{restore_detail} Original error: {detail}")
 
 
 def parse_leases() -> dict:
@@ -827,6 +1042,7 @@ def index():
         configs=list_configs(), config_checks=all_config_status(),
         devices=devices, profiles=profiles, mapping_issues=mapping_issues(devices, profiles), settings=settings,
         interfaces=network_interfaces(), network_checks=network_checks(settings),
+        network_errors=_network_errors(settings), network_warnings=_network_warnings(settings),
         pool_errors=validate_dhcp_pool(settings),
         pool_suggestion=dhcp_pool_suggestion(settings),
         pool_prefix_length=netmask_prefix_length(settings.get("netmask", "")),
@@ -847,6 +1063,8 @@ def network_api():
     return jsonify({
         "interfaces": network_interfaces(),
         "network_checks": network_checks(settings),
+        "network_errors": _network_errors(settings),
+        "network_warnings": _network_warnings(settings),
         "pool_errors": validate_dhcp_pool(settings),
     })
 
@@ -988,7 +1206,8 @@ def deploy():
            "hostname": host,
            "ip_address": request.form.get("ip_address", "").strip(),
            "mgmt_ip": request.form.get("mgmt_ip", "").strip(),
-           "specific_config_file": request.form.get("specific_config_file", "").strip()}
+           "specific_config_file": request.form.get("specific_config_file", "").strip(),
+           "option60_confirmed": request.form.get("option60_confirmed", "").strip()}
     if method == "serial" and not serial:
         flash("Serial Number is required for 'By Serial'.", "danger"); return redirect(url_for("index"))
     if method == "serial" and not SERIAL_RE.fullmatch(serial):
@@ -1035,7 +1254,8 @@ def add_profile():
     p = {"label": request.form.get("label", "").strip(),
          "vendor_class": request.form.get("vendor_class", "").strip(),
          "match_mode": request.form.get("match_mode", "contains").strip() or "contains",
-         "config_file": request.form.get("config_file", "").strip()}
+         "config_file": request.form.get("config_file", "").strip(),
+         "option60_confirmed": request.form.get("option60_confirmed", "").strip()}
     existing = [r for r in read_profiles()
                 if not (r.get("vendor_class") == p["vendor_class"]
                         and r.get("match_mode", "contains") == p["match_mode"])]
@@ -1225,6 +1445,12 @@ def nginx_config_fetches(n: int = 200) -> list[dict]:
     return out[-n:]
 
 
+def dhcp_option60_lines(n: int = 100) -> list[str]:
+    """Return raw DHCP log lines that expose vendor-class / Option 60 data."""
+    patterns = re.compile(r"vendor-class-identifier|vendor-class|option\s*60|option-60", re.I)
+    return [line for line in tail(SYSLOG_FILE, n=2000) if patterns.search(line)][-n:]
+
+
 LOG_SOURCES = {
     "dhcp":  lambda: tail(SYSLOG_FILE, 300, grep="dhcpd"),
     "nginx": lambda: tail(NGINX_ACCESS, 300, grep="/configs/"),
@@ -1237,6 +1463,7 @@ def logs():
     s = read_settings()
     return render_template("logs.html",
         dhcp_log="\n".join(LOG_SOURCES["dhcp"]()),
+        option60_log="\n".join(dhcp_option60_lines()),
         fetches=nginx_config_fetches(),
         leases_log="\n".join(LOG_SOURCES["leases"]()),
         syslog_path=str(SYSLOG_FILE), nginx_path=str(NGINX_ACCESS),

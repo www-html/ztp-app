@@ -127,7 +127,7 @@ Sau đó xóa mapping/profile sai trên UI, khôi phục file config/DHCP đã b
 
 Máy chạy ZTP phải có NIC hoặc VM NIC **bridged vào cùng L2/VLAN** với thiết bị. WSL2 mặc định dùng NAT, vì vậy không nên dùng WSL laptop làm DHCP server cho thiết bị thật. Dùng Ubuntu VM/appliance có NIC riêng nối vào mạng ZTP cô lập.
 
-Không chạy DHCP server này trên mạng production. Pool mặc định `19.96.0.0/16` chỉ dành cho lab cô lập; hãy đổi sang subnet RFC1918 phù hợp với thiết kế thực tế.
+Không chạy DHCP server này trên mạng production. Pool mặc định là `192.168.250.0/24` (RFC1918); hãy đổi sang subnet RFC1918 phù hợp với VLAN ZTP thực tế.
 
 ## Chọn interface Internet và ZTP trên Dashboard
 
@@ -242,7 +242,7 @@ Dùng khi nhiều thiết bị cùng vendor-class dùng chung một file. `vendo
 4. Chọn file cấu hình nếu thiết bị cần file riêng.
 5. Nhấn **Save & Deploy** hoặc lưu profile.
 6. Mở **Preview dhcpd.conf** để review rule trước khi cho thiết bị boot.
-7. Xác nhận `dhcpd -t` pass; app chỉ restart DHCP/Nginx sau khi kiểm tra này thành công.
+7. App sinh candidate, chạy `dhcpd -t`, backup file thật rồi atomic replace. Chỉ `isc-dhcp-server` được restart; Nginx không bị restart. Nếu restart DHCP lỗi, app tự khôi phục candidate cũ và thử restart lại cấu hình cũ.
 
 ## Xác minh thiết bị đã nhận đúng cấu hình
 
@@ -264,6 +264,12 @@ Trước khi deploy production, sao lưu ít nhất:
 sudo cp -a /etc/dhcp/dhcpd.conf /etc/dhcp/dhcpd.conf.before-ztp
 sudo cp -a /opt/ztp-app /opt/ztp-app.before-ztp
 ```
+
+App cũng tự tạo backup `.ztp-app.bak` cho `dhcpd.conf`, interface DHCP và ba file runtime `devices.json`, `generic_profiles.json`, `settings.json`. Các file JSON được ghi qua temporary file + `os.replace()`; JSON hỏng hoặc sai kiểu sẽ báo lỗi và dừng deploy, không biến thành danh sách rỗng.
+
+Mapping bị chặn nếu trùng Serial/MAC/hostname/DHCP IP/management IP; fixed DHCP IP phải nằm trong ZTP subnet, không nằm trong dynamic range và không trùng Server IP. Config được mapping phải tồn tại, có `root-authentication`, không bật `chassis auto-image-upgrade` và URL phải dưới giới hạn.
+
+Trước khi xác nhận Serial hoặc Generic Profile, mở **Logs → Option 60 / vendor class**, capture raw `vendor-class-identifier` từ EX4100 và EX4400, rồi tick xác nhận trên UI. Chỉ dùng Serial khi chuỗi serial thực sự nằm ở cuối Option 60; Regex vendor class phải được test bằng capture thật.
 
 Nếu cần dừng dịch vụ:
 
@@ -290,8 +296,8 @@ Có thể dùng ChatGPT/Codex để đọc repo, kiểm tra cấu hình, tạo m
 
 ```text
 Kiểm tra git status trước. Chỉ thay đổi file trong phạm vi đã nêu.
-Preview và validate dhcpd.conf trước khi deploy.
-Không restart DHCP/Nginx hoặc tác động thiết bị nếu chưa được tôi xác nhận.
+Preview và validate dhcpd.conf trước khi deploy. Production gate chặn ZTP interface down, thiếu/sai IPv4 hoặc trùng Internet interface; UI cảnh báo nếu có thể tồn tại DHCP server khác trên cùng L2/VLAN.
+Không restart Nginx khi deploy DHCP; chỉ `isc-dhcp-server` được restart sau khi candidate pass kiểm tra.
 Sau thay đổi phải báo diff, kết quả verify và rollback.
 ```
 
