@@ -3,125 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ZTP Manager — Bindings &amp; Health</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%231b6ef3'/%3E%3Ctext%20x='32'%20y='42'%20font-size='30'%20font-family='Arial'%20font-weight='bold'%20fill='white'%20text-anchor='middle'%3EZ+%3C/text%3E%3C/svg%3E">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <title>ZTP Manager — Health</title>
   <style>
-    :root { --glass-bg: rgba(255,255,255,.07); --glass-bd: rgba(255,255,255,.15); }
-    body { min-height:100vh; color:#e8edf4; font-size:.95rem;
-      background: radial-gradient(1100px 560px at 8% -12%, #173a6b 0, transparent 60%),
-        radial-gradient(900px 480px at 112% 8%, #38206b 0, transparent 55%), #0a0f1d; }
-    .glass { background:var(--glass-bg); border:1px solid var(--glass-bd);
-      backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-      border-radius:16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
-    .chip { background:var(--glass-bg); border:1px solid var(--glass-bd); border-radius:999px;
-      padding:.35rem .9rem; display:inline-flex; gap:.45rem; } .chip b{ color:#fff; }
-    .table{ color:#e8edf4; --bs-table-bg:transparent; --bs-table-color:#e8edf4; }
-    .table>:not(caption)>*>*{ border-color:rgba(255,255,255,.10); color:#e8edf4; }
-    .table thead th{ color:#9fb3d0; font-weight:600; }
-    select.form-select option, option { background:#13203b; color:#e8edf4; }
-    code,.mono{ color:#9ad0ff; font-family:ui-monospace,Consolas,monospace; font-size:.82rem; }
-    .btn-glass{ background:rgba(255,255,255,.1); border:1px solid var(--glass-bd); color:#fff; }
-    .navbar{ border-bottom:1px solid var(--glass-bd); } a{ color:#9ad0ff; }
-    footer{ color:rgba(255,255,255,.4); font-size:.8rem; }
-    .dot{ width:.6rem; height:.6rem; border-radius:50%; display:inline-block; }
+    :root { --navy:#102a43; --blue:#185abd; --bg:#f4f6f9; --surface:#fff; --text:#172b4d; --muted:#667085; --border:#d8e0ea; --success:#147d4f; --success-bg:#e8f6ef; --warning:#946200; --warning-bg:#fff5d6; --danger:#b42318; --danger-bg:#fdeceb; --shadow:0 2px 8px rgba(16,42,67,.08); }
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:14px/1.45 Inter,Segoe UI,Arial,sans-serif} a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline} code,.mono{color:#075985;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}
+    .app-shell{display:flex;min-height:100vh}.sidebar{width:236px;flex:0 0 236px;background:var(--navy);color:#dbeafe;padding:20px 14px;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:10px;padding:0 10px 24px;border-bottom:1px solid rgba(255,255,255,.14);font-size:18px;font-weight:700;color:#fff}.brand-mark{width:30px;height:30px;border-radius:6px;display:grid;place-items:center;background:#2f80ed;color:#fff;font-weight:800}.brand small{display:block;color:#9bb7d2;font-size:10px;font-weight:500;letter-spacing:.06em}.side-label{color:#8eabc7;font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:22px 10px 7px}.side-link{display:flex;align-items:center;gap:10px;width:100%;padding:10px 11px;margin:2px 0;border:0;border-radius:6px;background:transparent;color:#dbeafe;text-align:left;font:inherit;cursor:pointer}.side-link:hover{background:rgba(255,255,255,.08);color:#fff}.side-link.active{background:#2f80ed;color:#fff}.side-icon{width:20px;color:#a9c4df;text-align:center;font-weight:700}.side-link.active .side-icon{color:#fff}.side-footer{margin-top:auto;padding:18px 10px 0;border-top:1px solid rgba(255,255,255,.14);color:#9bb7d2;font-size:12px}.main{min-width:0;flex:1}.topbar{height:64px;padding:0 30px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:20px}.topbar-title{font-weight:700;color:var(--navy)}.topbar-meta{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px}.content{max-width:1500px;margin:0 auto;padding:28px 30px 48px}.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:22px}.eyebrow{margin:0 0 4px;color:var(--blue);font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}h1{margin:0;color:var(--navy);font-size:27px;letter-spacing:-.02em}h2{margin:0;color:var(--navy);font-size:16px}.page-head p{margin:5px 0 0;color:var(--muted)}.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:22px}.panel+.panel{margin-top:18px}.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.panel-head p{margin:4px 0 0;color:var(--muted);font-size:12px}.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:20px}.metric{background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:17px 18px}.metric-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.metric-value{margin-top:7px;color:var(--navy);font-size:22px;font-weight:750}.metric-note{margin-top:3px;color:var(--muted);font-size:12px}.status-banner{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:17px 20px;margin-bottom:20px;border:1px solid var(--border);border-left:4px solid #d99000;border-radius:8px;background:#fffdf6;box-shadow:var(--shadow)}.status-title{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.status-line{margin-top:5px;color:var(--text)}.badge-state{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}.badge-state.ok{color:var(--success);background:var(--success-bg)}.badge-state.warn{color:var(--warning);background:var(--warning-bg)}.badge-state.bad{color:var(--danger);background:var(--danger-bg)}.btn{border-radius:5px;font-size:13px;font-weight:650}.btn-primary{background:var(--blue);border-color:var(--blue)}.btn-outline-secondary{color:#475467;border-color:#b9c4d0}.form-control,.form-select{min-height:38px;border-color:#c9d3df;border-radius:5px;color:var(--text);font-size:13px}.form-label{color:var(--text);font-size:12px;font-weight:650;margin-bottom:5px}.form-text{color:var(--muted)!important;font-size:11px}.action-row{display:flex;flex-wrap:wrap;align-items:center;gap:9px}.table-wrap{overflow:auto;border:1px solid var(--border);border-radius:6px}.table{margin:0;color:var(--text);font-size:12px}.table thead th{background:#f7f9fb;color:#475467;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}.table>:not(caption)>*>*{padding:11px;border-color:#edf1f5;vertical-align:middle}.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}.dot.ok{background:#18a66b}.dot.bad{background:#d92d20}.dot.warn{background:#d99000}.detail-row{color:var(--muted);font-size:11px}.hidden-details{margin-top:14px}.hidden-details summary{color:var(--blue);cursor:pointer;font-size:12px;font-weight:650}.empty{color:var(--muted);padding:20px 10px;text-align:center}footer{margin-top:28px;color:#98a2b3;font-size:11px;text-align:center}@media(max-width:1100px){.sidebar{width:202px;flex-basis:202px}.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:720px){.app-shell{display:block}.sidebar{width:100%;padding:12px}.brand{padding-bottom:12px}.side-label,.side-footer{display:none}.side-nav{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}.side-link{width:auto;padding:8px 10px}.topbar{padding:0 16px}.topbar-meta span{display:none}.content{padding:20px 14px 36px}.page-head{display:block}.metric-grid{grid-template-columns:1fr}.status-banner{display:block}.status-banner .action-row{margin-top:12px}}
   </style>
 </head>
 <body>
-<nav class="navbar px-4 py-3 mb-4 d-flex justify-content-between">
-  <span class="navbar-brand text-white fw-bold mb-0">ZTP&nbsp;Manager — Bindings &amp; Health</span>
-  <div class="d-flex align-items-center gap-2">
-    <a href="/" class="btn btn-sm btn-glass">Dashboard</a>
-    <a href="/logs" class="btn btn-sm btn-glass">Logs</a>
-    <form method="get" action="/bindings" class="d-flex align-items-center gap-2 mb-0">
-      <input type="hidden" name="health" value="1">
-      <select name="src_sel" class="form-select form-select-sm" style="width:auto"
-              title="Source IP for ping/SSH (routing test) — incl. loopbacks on the VM">
-        <option value="">source: auto</option>
-        {% for ip in sources %}<option value="{{ ip }}" {{ 'selected' if ip==src }}>src {{ ip }}</option>{% endfor %}
-      </select>
-      <input name="src" class="form-control form-control-sm" style="width:11rem"
-             placeholder="or custom/loopback IP" value="{{ src }}"
-             title="Override: type any local source IP (e.g. a loopback) the device has a route to">
-      <button class="btn btn-sm btn-success">Run health check</button>
-    </form>
-    <a href="/export/bindings.csv{{ '?health=1&src=' ~ src if src else '?health=1' }}" class="btn btn-sm btn-outline-info">Export CSV</a>
-  </div>
-</nav>
-
-<div class="container-fluid px-4 pb-4">
-
-  <div class="d-flex flex-wrap gap-2 mb-3">
-    <span class="chip">DHCP range <b>{{ settings.range_low }} – {{ settings.range_high }}</b></span>
-    <span class="chip"><b>{{ fixed_count }}</b> fixed IPs</span>
-    <span class="chip"><b>{{ lease_count }}</b> active leases</span>
-    <span class="chip">SSH verify: <b>{{ 'ready' if creds_set else 'off (set credentials on Dashboard)' }}</b></span>
-  </div>
-
-  {% if not health %}
-  <div class="alert alert-info py-2">Showing configured bindings + DHCP leases. Click
-     <b>Run health check</b> to ping + SSH each device. (Health checks are live and may take a few seconds.)</div>
-  {% endif %}
-
-  <div class="glass p-4 mb-3">
-    <table class="table table-sm align-middle mb-0">
-      <thead><tr>
-        <th>Hostname</th><th>Method</th><th>Identifier</th><th>Type</th>
-        <th>DHCP IP</th><th>Mgmt IP</th><th>Config</th><th>DHCP lease</th>
-        <th>Ping</th><th>SSH</th><th>Provisioning</th>
-      </tr></thead>
-      <tbody>
-        {% for d in devices %}
-        {% set h = health.get(d.hostname) %}
-        {% set lease = leases.get(d.ip_address) %}
-        <tr>
-          <td>{{ d.hostname }}</td>
-          <td><span class="badge {{ 'bg-info' if d.match_method=='serial' else 'bg-secondary' }}">{{ d.match_method }}</span></td>
-          <td class="mono">{{ d.serial_number or d.mac_address }}</td>
-          <td>{{ d.device_type }}</td>
-          <td class="mono">{{ d.ip_address or '—' }}</td>
-          <td class="mono">{{ d.mgmt_ip or '—' }}{% if h and h.ip %}<div class="text-white-50" style="font-size:.72rem">checked {{ h.ip }}</div>{% endif %}</td>
-          <td class="mono">{{ d.specific_config_file }}</td>
-          <td>{% if lease %}<span class="badge bg-success">{{ lease.state }}</span>
-              <span class="mono">{{ lease.mac }}</span>{% else %}<span class="text-white-50">—</span>{% endif %}</td>
-          {% if h %}
-            <td>{% if h.ping %}<span class="dot bg-success"></span>{% else %}<span class="dot bg-danger"></span>{% endif %}</td>
-            <td>{% if h.ssh %}<span class="dot bg-success"></span>{% else %}<span class="dot bg-danger"></span>{% endif %}</td>
-            <td>
-              {% if h.status == 'VERIFIED' %}<span class="badge bg-success">VERIFIED</span>
-              {% elif 'reachable' in h.status or h.status == 'SSH open' %}<span class="badge bg-warning text-dark">{{ h.status }}</span>
-              {% elif 'mismatch' in h.status %}<span class="badge bg-danger">{{ h.status }}</span>
-              {% else %}<span class="badge bg-secondary">{{ h.status }}</span>{% endif %}
-            </td>
-          {% else %}<td>—</td><td>—</td><td class="text-white-50">not checked</td>{% endif %}
-        </tr>
-        {% else %}<tr><td colspan="11" class="text-white-50">No devices. Add them on the Dashboard.</td></tr>{% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-  <details class="glass p-3">
-    <summary class="fw-semibold">How do I know a device provisioned successfully?</summary>
-    <div class="small mt-2">
-      A device is considered <b>successfully provisioned</b> when, after ZTP, it boots into the
-      delivered config and is reachable at its management IP. This page reports it in layers:
-      <ul class="mb-2">
-        <li><b>DHCP lease</b> — the server saw the device and leased it an IP (it reached ZTP at all).</li>
-        <li><b>Ping</b> — the device answers ICMP at its assigned IP (booted, network up).</li>
-        <li><b>SSH</b> — TCP/22 is open (management plane up, config applied far enough to allow SSH).</li>
-        <li><b>VERIFIED</b> — we logged in over SSH and the device's <code>host-name</code> matches the
-            expected hostname → the <i>correct</i> config landed on the <i>correct</i> device.
-            Requires SSH credentials (set Default or per-device on the Dashboard).</li>
-      </ul>
-      Health check targets the <b>Management IP (post-ZTP)</b> if set — this is usually a different
-      subnet than the DHCP range (the device's real mgmt/loopback after the full config loads), and
-      devices may span many subnets. The ZTP server (or wherever this app runs) must have an L3 route
-      to those subnets for ping/SSH to succeed. If no Mgmt IP is set, it falls back to the DHCP IP.
-      The “checked &lt;ip&gt;” line shows which IP was actually probed.
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">Z</span><span>ZTP Manager<small>Operations Console</small></span></div>
+    <div class="side-label">Workspace</div>
+    <nav class="side-nav">
+      <a class="side-link" href="/"><span class="side-icon">◼</span>Overview</a>
+      <a class="side-link" href="/#network-view"><span class="side-icon">⌁</span>Network</a>
+      <a class="side-link" href="/#devices-view"><span class="side-icon">◇</span>Devices</a>
+      <a class="side-link" href="/#configs-view"><span class="side-icon">□</span>Configs</a>
+      <a class="side-link" href="/#validation-view"><span class="side-icon">✓</span>Validation</a>
+    </nav>
+    <div class="side-label">Operations</div>
+    <nav class="side-nav">
+      <a class="side-link active" href="/bindings"><span class="side-icon">↔</span>Health</a>
+      <a class="side-link" href="/logs"><span class="side-icon">≡</span>Logs</a>
+      <a class="side-link" href="/#admin-view"><span class="side-icon">⚙</span>Administration</a>
+    </nav>
+    <div class="side-footer">UI v2 · {{ version }}<br>Option 66: <code>{{ settings.server_ip }}</code></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div class="topbar-title">ZTP deployment workspace</div><div class="topbar-meta"><span>Health</span><span>Option 66 <code>{{ settings.server_ip }}</code></span><a class="btn btn-sm btn-outline-secondary" href="/logs">Open logs</a></div></header>
+    <div class="content">
+      <div class="page-head"><div><p class="eyebrow">Operations / Health</p><h1>Bindings &amp; Health</h1><p>Check DHCP, reachability, SSH, and final hostname verification.</p></div><div class="action-row"><a href="/export/bindings.csv{{ '?health=1&src=' ~ src if src else '?health=1' }}" class="btn btn-outline-secondary">Export CSV</a></div></div>
+      <div class="status-banner"><div><div class="status-title">Health check status</div><div class="status-line">{{ 'Live results are shown below.' if health else 'No live check has been run. The table shows current bindings and leases.' }}</div></div><div>{% if health %}<span class="badge-state ok">● Check complete</span>{% else %}<span class="badge-state warn">● Not checked</span>{% endif %}</div></div>
+      <div class="metric-grid"><div class="metric"><div class="metric-label">Specific devices</div><div class="metric-value">{{ devices|length }}</div><div class="metric-note">configured mappings</div></div><div class="metric"><div class="metric-label">Active leases</div><div class="metric-value">{{ lease_count }}</div><div class="metric-note">DHCP leases seen</div></div><div class="metric"><div class="metric-label">Fixed IPs</div><div class="metric-value">{{ fixed_count }}</div><div class="metric-note">By-MAC reservations</div></div><div class="metric"><div class="metric-label">SSH verify</div><div class="metric-value">{{ 'Ready' if creds_set else 'Off' }}</div><div class="metric-note">{{ 'credentials configured' if creds_set else 'set on Administration' }}</div></div></div>
+      <div class="panel"><div class="panel-head"><div><h2>Run health check</h2><p>Health checks may take a few seconds and use the selected source IP for routing tests.</p></div></div><form method="get" action="/bindings" class="row g-3 align-items-end"><input type="hidden" name="health" value="1"><div class="col-md-4"><label class="form-label">Source IP</label><select name="src_sel" class="form-select"><option value="">Auto</option>{% for ip in sources %}<option value="{{ ip }}" {{ 'selected' if ip==src }}>{{ ip }}</option>{% endfor %}</select></div><div class="col-md-4"><button class="btn btn-primary">Run health check</button></div><div class="col-md-4"><details class="hidden-details"><summary>Advanced: custom source</summary><input name="src" class="form-control mt-2" placeholder="Local source or loopback IP" value="{{ src }}"><div class="form-text">Use only when the server has a route from a specific local address.</div></details></div></form></div>
+      <div class="panel"><div class="panel-head"><div><h2>Device status</h2><p>Expand Details for config, checked IP, and device type.</p></div><span class="badge-state {{ 'ok' if health else 'warn' }}">{{ health|length if health else 0 }} checked</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Device</th><th>DHCP</th><th>Management</th><th>Lease</th><th>Health</th><th>Provisioning</th><th></th></tr></thead><tbody>{% for d in devices %}{% set h = health.get(d.hostname) %}{% set lease = leases.get(d.ip_address) %}<tr><td><b>{{ d.hostname }}</b><div class="detail-row mono">{{ d.serial_number or d.mac_address }}</div></td><td class="mono">{{ d.ip_address or '—' }}</td><td class="mono">{{ d.mgmt_ip or '—' }}</td><td>{% if lease %}<span class="badge-state ok">{{ lease.state }}</span>{% else %}<span class="badge-state warn">None</span>{% endif %}</td><td>{% if h %}<span class="dot {{ 'ok' if h.ping else 'bad' }}"></span>Ping <span class="dot {{ 'ok' if h.ssh else 'bad' }}" style="margin-left:8px"></span>SSH{% else %}<span class="badge-state warn">Not checked</span>{% endif %}</td><td>{% if h and h.status == 'VERIFIED' %}<span class="badge-state ok">VERIFIED</span>{% elif h and ('reachable' in h.status or h.status == 'SSH open') %}<span class="badge-state warn">{{ h.status }}</span>{% elif h and 'mismatch' in h.status %}<span class="badge-state bad">{{ h.status }}</span>{% elif h %}<span class="badge-state warn">{{ h.status }}</span>{% else %}<span class="badge-state warn">Not checked</span>{% endif %}</td><td><details><summary class="detail-row">Details</summary><div class="detail-row mt-2">Type: {{ d.device_type or '—' }}<br>Config: <span class="mono">{{ d.specific_config_file or '(shared profile)' }}</span>{% if h and h.ip %}<br>Checked IP: <span class="mono">{{ h.ip }}</span>{% endif %}</div></details></td></tr>{% else %}<tr><td colspan="7" class="empty">No devices. Add mappings from Devices.</td></tr>{% endfor %}</tbody></table></div></div>
+      <details class="panel hidden-details"><summary>How health verification works</summary><div class="detail-row mt-3"><b>DHCP lease</b> means the device reached ZTP. <b>Ping</b> means the IP answers. <b>SSH</b> means the management plane is open. <b>VERIFIED</b> means SSH hostname matches the expected device. Health checks use the Management IP when set, otherwise the DHCP IP.</div></details>
+      <footer>ztp-app {{ version }} · UI v2 · Built by {{ author }}</footer>
     </div>
-  </details>
-
-  <footer class="text-center mt-4">Built by {{ author }} &middot; v{{ version }}</footer>
+  </main>
 </div>
 </body>
 </html>
