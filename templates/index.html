@@ -4,333 +4,384 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ZTP Manager</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%231b6ef3'/%3E%3Ctext%20x='32'%20y='42'%20font-size='30'%20font-family='Arial'%20font-weight='bold'%20fill='white'%20text-anchor='middle'%3EZ+%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23185abd'/%3E%3Ctext x='32' y='43' font-size='32' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'%3EZ%3C/text%3E%3C/svg%3E">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    :root { --glass-bg: rgba(255,255,255,.07); --glass-bd: rgba(255,255,255,.15); }
-    body { min-height:100vh; color:#e8edf4; font-size:.95rem;
-      background: radial-gradient(1100px 560px at 8% -12%, #173a6b 0, transparent 60%),
-        radial-gradient(900px 480px at 112% 8%, #38206b 0, transparent 55%), #0a0f1d; }
-    .glass { background:var(--glass-bg); border:1px solid var(--glass-bd);
-      backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-      border-radius:16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
-    .glass .form-control,.glass .form-select { background:rgba(255,255,255,.06);
-      border:1px solid rgba(255,255,255,.18); color:#fff; }
-    .glass .form-control::placeholder { color:rgba(255,255,255,.45); }
-    .card-h { font-size:.78rem; letter-spacing:.12em; text-transform:uppercase; color:#8fb6ff; }
-    .chip { background:var(--glass-bg); border:1px solid var(--glass-bd); border-radius:999px;
-      padding:.35rem .9rem; display:inline-flex; gap:.45rem; align-items:center; }
-    .chip b { color:#fff; } .table{ color:#e8edf4; --bs-table-bg:transparent; --bs-table-color:#e8edf4; }
-    .table>:not(caption)>*>* { border-color:rgba(255,255,255,.10); color:#e8edf4; }
-    .table thead th{ color:#9fb3d0; font-weight:600; }
-    select.form-select option, option { background:#13203b; color:#e8edf4; }
-    code,.mono{ color:#9ad0ff; font-family:ui-monospace,Consolas,monospace; font-size:.82rem; }
-    .btn-glass{ background:rgba(255,255,255,.1); border:1px solid var(--glass-bd); color:#fff; }
-    .navbar{ border-bottom:1px solid var(--glass-bd); }
-    .info{ cursor:pointer; color:#8fb6ff; border:1px solid var(--glass-bd); border-radius:50%;
-      width:1.15rem; height:1.15rem; display:inline-flex; align-items:center; justify-content:center;
-      font-size:.7rem; font-style:italic; }
-    summary{ cursor:pointer; } a{ color:#9ad0ff; }
-    footer{ color:rgba(255,255,255,.4); font-size:.8rem; }
+    :root { --navy:#102a43; --navy-2:#163b5c; --blue:#185abd; --blue-soft:#eaf2ff;
+      --bg:#f4f6f9; --surface:#fff; --text:#172b4d; --muted:#667085; --border:#d8e0ea;
+      --success:#147d4f; --success-bg:#e8f6ef; --warning:#946200; --warning-bg:#fff5d6;
+      --danger:#b42318; --danger-bg:#fdeceb; --shadow:0 2px 8px rgba(16,42,67,.08); }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:14px/1.45 Inter,Segoe UI,Arial,sans-serif; }
+    a { color:var(--blue); text-decoration:none; } a:hover { text-decoration:underline; }
+    code,.mono { color:#075985; font:12px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .app-shell { display:flex; min-height:100vh; }
+    .sidebar { width:236px; flex:0 0 236px; background:var(--navy); color:#dbeafe; padding:20px 14px; display:flex; flex-direction:column; }
+    .brand { display:flex; align-items:center; gap:10px; padding:0 10px 24px; border-bottom:1px solid rgba(255,255,255,.14); font-size:18px; font-weight:700; color:#fff; }
+    .brand-mark { width:30px; height:30px; border-radius:6px; display:grid; place-items:center; background:#2f80ed; color:#fff; font-weight:800; }
+    .brand small { display:block; color:#9bb7d2; font-size:10px; font-weight:500; letter-spacing:.06em; }
+    .side-label { color:#8eabc7; font-size:10px; text-transform:uppercase; letter-spacing:.12em; margin:22px 10px 7px; }
+    .side-link { display:flex; align-items:center; gap:10px; width:100%; padding:10px 11px; margin:2px 0; border:0; border-radius:6px; background:transparent; color:#dbeafe; text-align:left; font:inherit; cursor:pointer; }
+    .side-link:hover { background:rgba(255,255,255,.08); color:#fff; }
+    .side-link.active { background:#2f80ed; color:#fff; box-shadow:0 1px 3px rgba(0,0,0,.18); }
+    .side-link .side-icon { width:20px; color:#a9c4df; text-align:center; font-weight:700; }
+    .side-link.active .side-icon { color:#fff; }
+    .side-footer { margin-top:auto; padding:18px 10px 0; border-top:1px solid rgba(255,255,255,.14); color:#9bb7d2; font-size:12px; }
+    .main { min-width:0; flex:1; }
+    .topbar { height:64px; padding:0 30px; background:#fff; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    .topbar-title { font-weight:700; color:var(--navy); }
+    .topbar-meta { display:flex; align-items:center; gap:14px; color:var(--muted); font-size:12px; }
+    .topbar-meta .option66 { padding-left:14px; border-left:1px solid var(--border); }
+    .content { max-width:1500px; margin:0 auto; padding:28px 30px 48px; }
+    .page-head { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:22px; }
+    .eyebrow { margin:0 0 4px; color:var(--blue); font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+    h1 { margin:0; color:var(--navy); font-size:27px; letter-spacing:-.02em; }
+    h2 { margin:0; color:var(--navy); font-size:16px; }
+    h3 { margin:0; color:var(--navy); font-size:13px; }
+    .page-head p { margin:5px 0 0; color:var(--muted); }
+    .panel { background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); padding:22px; }
+    .panel + .panel { margin-top:18px; }
+    .panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px; }
+    .panel-head p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+    .status-banner { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding:17px 20px; margin-bottom:20px; border:1px solid var(--border); border-left:4px solid var(--success); border-radius:8px; background:#fff; box-shadow:var(--shadow); }
+    .status-banner.warning { border-left-color:#d99000; background:#fffdf6; }
+    .status-banner.danger { border-left-color:#d92d20; background:#fffafa; }
+    .status-title { font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+    .status-line { margin-top:5px; color:var(--text); }
+    .status-action { flex:0 0 auto; padding-top:2px; }
+    .badge-state { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:999px; font-size:11px; font-weight:700; white-space:nowrap; }
+    .badge-state.ok { color:var(--success); background:var(--success-bg); }
+    .badge-state.warn { color:var(--warning); background:var(--warning-bg); }
+    .badge-state.bad { color:var(--danger); background:var(--danger-bg); }
+    .metric-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:20px; }
+    .metric { background:#fff; border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); padding:17px 18px; }
+    .metric-label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+    .metric-value { margin-top:7px; color:var(--navy); font-size:22px; font-weight:750; }
+    .metric-note { margin-top:3px; color:var(--muted); font-size:12px; }
+    .two-col { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(300px,.65fr); gap:18px; }
+    .three-col { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+    .check-list { list-style:none; padding:0; margin:0; }
+    .check-list li { display:flex; align-items:flex-start; gap:10px; padding:10px 0; border-bottom:1px solid #edf1f5; }
+    .check-list li:last-child { border-bottom:0; padding-bottom:0; }
+    .check-dot { width:8px; height:8px; margin-top:6px; border-radius:50%; background:#98a2b3; flex:0 0 auto; }
+    .check-dot.ok { background:#18a66b; } .check-dot.bad { background:#d92d20; } .check-dot.warn { background:#d99000; }
+    .steps { list-style:none; padding:0; margin:0; counter-reset:step; }
+    .steps li { display:flex; gap:11px; padding:9px 0; color:var(--muted); }
+    .steps li:before { counter-increment:step; content:counter(step); width:22px; height:22px; border-radius:50%; display:grid; place-items:center; background:var(--blue-soft); color:var(--blue); font-size:11px; font-weight:700; flex:0 0 auto; }
+    .quick-start-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; }
+    .quick-step { min-height:132px; display:flex; gap:10px; padding:13px; border:1px solid var(--border); border-radius:7px; background:#f8fafc; color:var(--text); text-align:left; text-decoration:none; }
+    button.quick-step { font:inherit; cursor:pointer; }
+    .quick-step:hover { border-color:#8db5e7; background:#f1f6fd; text-decoration:none; }
+    .quick-step-number { width:24px; height:24px; flex:0 0 auto; display:grid; place-items:center; border-radius:50%; background:var(--blue-soft); color:var(--blue); font-size:11px; font-weight:750; }
+    .quick-step-body { min-width:0; }
+    .quick-step-title { display:block; color:var(--navy); font-size:13px; font-weight:750; }
+    .quick-step-location { display:block; margin-top:3px; color:var(--blue); font-size:11px; font-weight:650; }
+    .quick-step-result { display:block; margin-top:8px; color:var(--muted); font-size:11px; line-height:1.4; }
+    .mapping-guide { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+    .guide-card { padding:14px; border:1px solid var(--border); border-radius:7px; background:#f8fafc; }
+    .guide-card h3 { margin:0 0 5px; color:var(--navy); font-size:13px; }
+    .guide-card p { margin:0; color:var(--muted); font-size:12px; }
+    .mapping-order { margin:12px 0 0; padding:10px 12px; border-left:3px solid var(--blue); background:var(--blue-soft); color:#344054; font-size:12px; }
+    .form-label { color:var(--text); font-size:12px; font-weight:650; margin-bottom:5px; }
+    .field-tag { display:inline-flex; align-items:center; margin-left:5px; padding:2px 6px; border-radius:999px; font-size:10px; font-weight:750; line-height:1.2; vertical-align:1px; white-space:nowrap; }
+    .field-tag.required { color:#9b1c1c; background:#fdecec; }
+    .field-tag.optional { color:#475467; background:#eef2f6; }
+    .field-tag.exact { color:#075985; background:#e0f2fe; }
+    .field-tag.pattern { color:#6941c6; background:#f1eafe; }
+    .field-tag.conditional { color:#946200; background:#fff5d6; }
+    .input-rules { margin:16px 0 0; padding:12px 14px; border:1px solid #cfe0f5; border-radius:7px; background:#f5f9ff; color:#344054; font-size:12px; }
+    .input-rules strong { color:var(--navy); }
+    .rule-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px 18px; margin:0; padding:0; list-style:none; }
+    .rule-list li { display:flex; align-items:flex-start; gap:7px; }
+    .rule-list li::before { content:'•'; color:var(--blue); font-weight:800; }
+    .rule-list code { white-space:nowrap; }
+    .form-control,.form-select { min-height:38px; border-color:#c9d3df; border-radius:5px; color:var(--text); background:#fff; font-size:13px; }
+    .form-control:focus,.form-select:focus { border-color:#5b9cf4; box-shadow:0 0 0 3px rgba(24,90,189,.12); }
+    .form-text { color:var(--muted) !important; font-size:11px; }
+    .section-title { margin:24px 0 11px; padding-top:18px; border-top:1px solid var(--border); color:var(--navy); font-size:12px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+    .form-group-block { margin-top:18px; padding-top:16px; border-top:1px solid var(--border); }
+    .form-group-block:first-of-type { margin-top:0; padding-top:0; border-top:0; }
+    .form-group-title { margin-bottom:11px; color:var(--navy); font-size:12px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+    .section-title:first-child { margin-top:0; padding-top:0; border-top:0; }
+    .btn { border-radius:5px; font-size:13px; font-weight:650; }
+    .btn-primary { background:var(--blue); border-color:var(--blue); }
+    .btn-primary:hover { background:#0f4aa2; border-color:#0f4aa2; }
+    .btn-outline-secondary { color:#475467; border-color:#b9c4d0; }
+    .btn-outline-info { color:#0b6bcb; border-color:#77aee9; }
+    .action-row { display:flex; flex-wrap:wrap; align-items:center; gap:9px; margin-top:18px; padding-top:16px; border-top:1px solid var(--border); }
+    .alert { border-radius:5px; border-width:1px; font-size:12px; }
+    .table-wrap { overflow:auto; border:1px solid var(--border); border-radius:6px; }
+    .table { margin:0; color:var(--text); font-size:12px; --bs-table-bg:#fff; }
+    .table thead th { background:#f7f9fb; color:#475467; border-bottom:1px solid var(--border); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+    .table>:not(caption)>*>* { padding:10px 11px; border-color:#edf1f5; vertical-align:middle; }
+    .view[hidden] { display:none !important; }
+    .hidden-details { margin-top:14px; }
+    .hidden-details summary { color:var(--blue); cursor:pointer; font-size:12px; font-weight:650; }
+    .info { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border:1px solid #8aa8c7; border-radius:50%; color:var(--blue); font-size:10px; font-style:normal; cursor:pointer; }
+    .empty { color:var(--muted); padding:20px 10px; text-align:center; }
+    footer { margin-top:28px; color:#98a2b3; font-size:11px; text-align:center; }
+    @media (max-width:1100px) { .sidebar { width:202px; flex-basis:202px; } .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .two-col { grid-template-columns:1fr; } .quick-start-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+    @media (max-width:720px) { .app-shell { display:block; } .sidebar { width:100%; padding:12px; } .brand { padding-bottom:12px; } .side-label,.side-footer { display:none; } .side-nav { display:flex; flex-wrap:wrap; gap:4px; margin-top:10px; } .side-link { width:auto; padding:8px 10px; } .topbar { padding:0 16px; } .topbar-meta .option66 { display:none; } .content { padding:20px 14px 36px; } .page-head { display:block; } .page-head .btn { margin-top:12px; } .metric-grid,.three-col,.mapping-guide { grid-template-columns:1fr; } .quick-start-grid { grid-template-columns:1fr; } .status-banner { display:block; } .status-action { margin-top:12px; } }
   </style>
 </head>
 <body>
-<nav class="navbar px-4 py-3 mb-4 d-flex justify-content-between">
-  <span class="navbar-brand text-white fw-bold mb-0">ZTP&nbsp;Manager
-    {% if dev_mode %}<span class="badge bg-warning text-dark ms-2 align-middle">DEV</span>{% endif %}</span>
-  <div class="d-flex align-items-center gap-3">
-    <a href="/" class="btn btn-sm btn-glass">Dashboard</a>
-    <a href="/bindings" class="btn btn-sm btn-glass">Bindings &amp; Health</a>
-    <a href="/logs" class="btn btn-sm btn-glass">Logs</a>
-    <span class="text-white-50 small">Opt 66: <code>{{ settings.server_ip }}</code></span>
-    <a href="/preview" target="_blank" class="btn btn-sm btn-outline-info">Preview dhcpd.conf</a>
-  </div>
-</nav>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">Z</span><span>ZTP Manager<small>Operations Console</small></span></div>
+    <div class="side-label">Workspace</div>
+    <nav class="side-nav">
+      <button type="button" class="side-link active" data-view="overview-view"><span class="side-icon">◼</span>Overview</button>
+      <button type="button" class="side-link" data-view="network-view"><span class="side-icon">⌁</span>Network</button>
+      <button type="button" class="side-link" data-view="devices-view"><span class="side-icon">◇</span>Devices</button>
+      <button type="button" class="side-link" data-view="configs-view"><span class="side-icon">□</span>Configs</button>
+      <button type="button" class="side-link" data-view="validation-view"><span class="side-icon">✓</span>Validation</button>
+    </nav>
+    <div class="side-label">Operations</div>
+    <nav class="side-nav">
+      <a class="side-link" href="/bindings"><span class="side-icon">↔</span>Health</a>
+      <a class="side-link" href="/logs"><span class="side-icon">≡</span>Logs</a>
+      <button type="button" class="side-link" data-view="admin-view"><span class="side-icon">⚙</span>Administration</button>
+    </nav>
+    <div class="side-footer">UI v2 · {{ version }}<br>Option 66: <code>{{ settings.server_ip }}</code></div>
+  </aside>
 
-<div class="container-fluid px-4 pb-4">
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">ZTP deployment workspace{% if dev_mode %} <span class="badge text-bg-warning">DEV</span>{% endif %}</div>
+      <div class="topbar-meta"><span>{{ author }}</span><span class="option66">Option 66 <code>{{ settings.server_ip }}</code></span><a class="btn btn-sm btn-outline-secondary" href="/preview" target="_blank">Preview DHCP</a></div>
+    </header>
 
-  <div class="d-flex flex-wrap gap-2 mb-3">
-    <span class="chip"><b>{{ configs|length }}</b> config files</span>
-    <span class="chip"><b>{{ devices|length }}</b> specific devices</span>
-    <span class="chip"><b>{{ profiles|length }}</b> generic profiles</span>
-  </div>
+    <div class="content">
+      {% with msgs = get_flashed_messages(with_categories=true) %}
+        {% if msgs %}<div class="mb-3">{% for cat, m in msgs %}<div class="alert alert-{{ cat }} py-2 mb-2" style="white-space:pre-line">{{ m }}</div>{% endfor %}</div>{% endif %}
+      {% endwith %}
 
-  {% with msgs = get_flashed_messages(with_categories=true) %}
-    {% if msgs %}<div class="mb-3">
-      {% for cat, m in msgs %}<div class="alert alert-{{ cat }} py-2 mb-2" style="white-space:pre-line">{{ m }}</div>{% endfor %}
-    </div>{% endif %}
-  {% endwith %}
+      {% set readiness_bad = network_checks or pool_errors %}
+      {% set ztp_ready = not readiness_bad %}
 
-  <details class="glass p-3 mb-4">
-    <summary class="text-warning fw-semibold">ZTP Rules — auto-checked per file (see the “Checks” column)</summary>
-    <ol class="small mb-0 mt-2">
-      <li>Config must include <code>set system root-authentication ...</code> or the ZTP commit fails. <i>(auto-checked)</i></li>
-      <li>A full <b>load-override</b> config simply must not <b>enable</b> <code>chassis auto-image-upgrade</code> — a full config normally omits it, so it’s fine. Only configs that explicitly enable it (without a delete) are flagged. <i>(auto-checked)</i></li>
-      <li>Resulting HTTP URL <code>http://{{ settings.server_ip }}/configs/&lt;file&gt;</code> must be &lt; 256 chars. <i>(auto-checked)</i></li>
-      <li>Never run a manual <code>commit</code> on the console while ZTP is in progress. <i>(operator discipline)</i></li>
-    </ol>
-  </details>
-
-  <!-- Settings: DHCP pool + SSH credentials -->
-  <details class="glass p-3 mb-4">
-    <summary class="fw-semibold" style="color:#8fb6ff">DHCP Pool &amp; SSH Credentials</summary>
-    <div class="row g-4 mt-1">
-      <div class="col-lg-7">
-        <div class="card-h mb-2">DHCP Pool (Option 66 server = {{ settings.server_ip }})</div>
-        <form method="post" action="/settings" class="row g-2 align-items-end">
-          <div class="col-sm-4"><label class="form-label small mb-1">Server IP</label>
-            <input name="server_ip" class="form-control" value="{{ settings.server_ip }}" required></div>
-          <div class="col-sm-4"><label class="form-label small mb-1">Subnet</label>
-            <input name="subnet" class="form-control" value="{{ settings.subnet }}" required></div>
-          <div class="col-sm-4"><label class="form-label small mb-1">Netmask</label>
-            <input name="netmask" class="form-control" value="{{ settings.netmask }}" required></div>
-          <div class="col-sm-4"><label class="form-label small mb-1">Range low</label>
-            <input name="range_low" class="form-control" value="{{ settings.range_low }}" required></div>
-          <div class="col-sm-4"><label class="form-label small mb-1">Range high</label>
-            <input name="range_high" class="form-control" value="{{ settings.range_high }}" required></div>
-          <div class="col-sm-4"><button class="btn btn-glass w-100">Save pool</button></div>
-        </form>
-        <div class="form-text text-white-50">Default 19.96.0.0/16 (isolated L2 lab). Server IP becomes Option 66 + gateway.</div>
-      </div>
-      <div class="col-lg-5">
-        <div class="card-h mb-2">SSH Credentials <span class="info" data-bs-toggle="popover"
-            data-bs-title="SSH credentials for health verify"
-            data-bs-content="Used by Bindings &amp; Health to SSH in and confirm the hostname. Set a Default for all, or a per-device/site credential (scope = the device hostname). You can also set per-device creds inline in the device form below. Stored in creds.json (chmod 600), passwords never shown.">i</span></div>
-        <form method="post" action="/set_creds" class="row g-2 align-items-end">
-          <div class="col-12"><label class="form-label small mb-1">Apply to (scope)</label>
-            <select name="scope" class="form-select">
-              <option value="default">Default (all devices)</option>
-              {% for d in devices %}<option value="{{ d.hostname }}">{{ d.hostname }}</option>{% endfor %}
-            </select></div>
-          <div class="col-6"><input name="username" class="form-control" placeholder="username" required></div>
-          <div class="col-6"><input name="password" type="password" class="form-control" placeholder="password" required></div>
-          <div class="col-12"><button class="btn btn-glass w-100">Save credential</button></div>
-        </form>
-        <div class="form-text text-white-50">
-          Default: <b>{{ creds.default or 'not set' }}</b>;
-          per-host: {{ creds.by_host.keys()|list|join(', ') if creds.by_host else 'none' }}
+      <section id="overview-view" class="view">
+        <div class="page-head"><div><p class="eyebrow">Operations console</p><h1>Overview</h1><p>Check readiness, review inputs, then apply DHCP.</p></div><button type="button" class="btn btn-primary" data-view="network-view">Configure network</button></div>
+        <div class="status-banner {{ 'danger' if readiness_bad else 'warning' if not settings.ztp_interface else '' }}">
+          <div><div class="status-title">System readiness</div><div class="status-line">Internet <code>{{ settings.internet_interface or 'not selected' }}</code> · ZTP <code>{{ settings.ztp_interface or 'not selected' }}</code> · Server <code>{{ settings.server_ip }}</code></div></div>
+          <div class="status-action">{% if readiness_bad %}<span class="badge-state bad">● Action required</span>{% else %}<span class="badge-state ok">● Ready</span>{% endif %}</div>
         </div>
-      </div>
-    </div>
-  </details>
-
-  <!-- Admin login -->
-  <details class="glass p-3 mb-4">
-    <summary class="fw-semibold" style="color:#8fb6ff">Admin Login</summary>
-    <div class="row g-4 mt-1">
-      <div class="col-lg-6">
-        <form method="post" action="/account/change_password" class="row g-2 align-items-end">
-          <div class="col-12"><label class="form-label small mb-1">Current password</label>
-            <input name="current_password" type="password" class="form-control" required autocomplete="current-password"></div>
-          <div class="col-12"><label class="form-label small mb-1">New username <span class="text-white-50">(optional)</span></label>
-            <input name="new_username" class="form-control" autocomplete="off"></div>
-          <div class="col-12"><label class="form-label small mb-1">New password</label>
-            <input name="new_password" type="password" class="form-control" required autocomplete="new-password"></div>
-          <div class="col-12"><button class="btn btn-glass w-100">Update login</button></div>
-        </form>
-        <div class="form-text text-white-50">Default login is <code>admin</code> / <code>admin</code> on first run
-          — change it here before exposing this VM beyond an isolated lab.</div>
-      </div>
-    </div>
-  </details>
-
-  <div class="row g-4">
-    <!-- LEFT: Config files -->
-    <div class="col-lg-4">
-      <div class="glass p-4 h-100">
-        <div class="card-h mb-3">Config Files</div>
-        <form method="post" action="/upload" enctype="multipart/form-data" class="mb-3">
-          <div class="input-group">
-            <input type="file" name="config_file" class="form-control" required>
-            <button class="btn btn-info">Upload</button>
-          </div>
-          <div class="form-text text-white-50">Allowed: {{ allowed_ext }}. Auto-checked for root-auth &amp; auto-image-upgrade.</div>
-        </form>
-        <table class="table table-sm align-middle">
-          <thead><tr><th>File</th><th>Checks</th><th></th></tr></thead>
-          <tbody>
-            {% for c in configs %}
-            {% set issues = config_checks.get(c, []) %}
-            <tr>
-              <td><a href="/configs/{{ c }}" target="_blank" class="mono">{{ c }}</a></td>
-              <td>{% if issues %}<span class="info" style="color:#ffc107;border-color:#ffc107"
-                     data-bs-toggle="popover" data-bs-title="{{ issues|length }} issue(s)"
-                     data-bs-content="{{ issues|join(' | ') }}">!</span>
-                  {% else %}<span class="badge bg-success">OK</span>{% endif %}</td>
-              <td class="text-end"><form method="post" action="/delete_config/{{ c }}"
-                  onsubmit="return confirm('Delete {{ c }}?')"><button class="btn btn-sm btn-outline-danger py-0">×</button></form></td>
-            </tr>{% else %}<tr><td colspan="3" class="text-white-50">No files yet</td></tr>{% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- RIGHT -->
-    <div class="col-lg-8">
-      <!-- Specific devices -->
-      <div class="glass p-4 mb-4">
-        <div class="card-h mb-3 d-flex justify-content-between">
-          <span>Specific Device Mapping</span>
-          <span class="text-lowercase">
-            <a href="/export/devices.csv" class="me-2">export CSV</a>
-            <a href="/export/devices.json">JSON</a>
-          </span>
+        <div class="metric-grid">
+          <div class="metric"><div class="metric-label">Network</div><div class="metric-value">{{ 'Ready' if not network_checks else 'Blocked' }}</div><div class="metric-note">{{ network_checks|length }} active check(s)</div></div>
+          <div class="metric"><div class="metric-label">DHCP pool</div><div class="metric-value">{{ 'Valid' if not pool_errors else 'Review' }}</div><div class="metric-note">{{ settings.subnet }} · {{ settings.netmask }}</div></div>
+          <div class="metric"><div class="metric-label">Configs</div><div class="metric-value">{{ configs|length }}</div><div class="metric-note">uploaded files</div></div>
+          <div class="metric"><div class="metric-label">Devices</div><div class="metric-value">{{ devices|length + profiles|length }}</div><div class="metric-note">{{ devices|length }} specific · {{ profiles|length }} profiles</div></div>
         </div>
-        <form method="post" action="/deploy" class="row g-2 align-items-end">
-          <div class="col-sm-3">
-            <label class="form-label small mb-1">Match by
-              <span class="info" data-bs-toggle="popover" data-bs-title="Match method"
-                data-bs-content="By Serial: device is matched on the serial inside DHCP Option 60 (regex, anchored). By MAC: device is matched on its hardware MAC via a host{} declaration (highest precedence). SRX often does NOT send serial in Option 60 — use MAC for those.">i</span></label>
-            <select name="match_method" id="method" class="form-select" onchange="toggleId()">
-              <option value="serial">Serial Number</option>
-              <option value="mac">MAC Address</option>
-            </select>
+        <div class="panel"><div class="panel-head"><div><h2>Readiness checks</h2><p>Production DHCP is blocked until all required checks pass.</p></div><span class="badge-state {{ 'bad' if readiness_bad else 'ok' }}">{{ 'Blocked' if readiness_bad else 'Passed' }}</span></div>
+          <ul class="check-list">
+            {% if pool_errors %}{% for message in pool_errors %}<li><span class="check-dot bad"></span><span>{{ message }}</span></li>{% endfor %}{% endif %}
+            {% if network_checks %}{% for message in network_checks %}<li><span class="check-dot {{ 'bad' if 'ERROR:' in message else 'warn' }}"></span><span>{{ message }}</span></li>{% endfor %}{% endif %}
+            {% if not readiness_bad %}<li><span class="check-dot ok"></span><span>Pool and interface checks passed.</span></li>{% endif %}
+          </ul>
+        </div>
+        <div class="panel"><div class="panel-head"><div><h2>Quick Start</h2><p>Each card shows where to work, what to do, and what success looks like.</p></div></div>
+          <div class="quick-start-grid">
+            <button type="button" class="quick-step" data-view="network-view"><span class="quick-step-number">1</span><span class="quick-step-body"><span class="quick-step-title">Prepare the network</span><span class="quick-step-location">Network</span><span class="quick-step-result">Click Refresh interfaces. Connect the cable and assign IPv4 to the ZTP interface.</span></span></button>
+            <button type="button" class="quick-step" data-view="network-view"><span class="quick-step-number">2</span><span class="quick-step-body"><span class="quick-step-title">Build the DHCP pool</span><span class="quick-step-location">Network</span><span class="quick-step-result">Select interfaces, click Suggest pool, review the values, confirm, and save.</span></span></button>
+            <button type="button" class="quick-step" data-view="configs-view"><span class="quick-step-number">3</span><span class="quick-step-body"><span class="quick-step-title">Upload a config</span><span class="quick-step-location">Configs</span><span class="quick-step-result">Upload the Junos file. Continue only when its checks show OK.</span></span></button>
+            <button type="button" class="quick-step" data-view="devices-view"><span class="quick-step-number">4</span><span class="quick-step-body"><span class="quick-step-title">Map the device</span><span class="quick-step-location">Devices</span><span class="quick-step-result">Use Specific Device for one unit, or Generic Profile for a group.</span></span></button>
+            <a class="quick-step" href="/bindings"><span class="quick-step-number">5</span><span class="quick-step-body"><span class="quick-step-title">Verify the result</span><span class="quick-step-location">Health → Logs</span><span class="quick-step-result">Run health check, then confirm the config fetch returns HTTP 200.</span></span></a>
           </div>
-          <div class="col-sm-5" id="serial_box">
-            <label class="form-label small mb-1">Serial Number
-              <span class="info" data-bs-toggle="popover" data-bs-title="Serial Number"
-                data-bs-content="Exact device serial as it appears at the END of DHCP Option 60 (e.g. Juniper-ex2300-48p-ZG1234 -> serial ZG1234). Matched as ...~= 'serial$'. Confirm the real Option 60 with: tcpdump -ni IFACE port 67 -v, or the dhcpd log.">i</span></label>
-            <input name="serial_number" id="serial_number" class="form-control" placeholder="ZG1234567890">
-          </div>
-          <div class="col-sm-5 d-none" id="mac_box">
-            <label class="form-label small mb-1">MAC Address
-              <span class="info" data-bs-toggle="popover" data-bs-title="MAC Address"
-                data-bs-content="Format XX:XX:XX:XX:XX:XX. Use the chassis/management MAC the device sends in DHCP. Stored lowercase.">i</span></label>
-            <input name="mac_address" id="mac_address" class="form-control" placeholder="2c:6b:f5:01:02:03"
-                   pattern="^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$">
-          </div>
-          <div class="col-sm-4">
-            <label class="form-label small mb-1">Device type
-              <span class="info" data-bs-toggle="popover" data-bs-title="Device type (label only)"
-                data-bs-content="Free text for YOUR reference (e.g. EX2300, EX2300-48P, SRX320). It is NOT used for matching, so no strict naming is required. Matching uses Serial/MAC/vendor-class only.">i</span></label>
-            <input name="device_type" class="form-control" placeholder="e.g. EX2300-48P">
-          </div>
-          <div class="col-sm-4">
-            <label class="form-label small mb-1">Hostname</label>
-            <input name="hostname" class="form-control" placeholder="edge-hcm-01" required>
-          </div>
-          <div class="col-sm-4">
-            <label class="form-label small mb-1">DHCP IP <span class="text-white-50">(By-MAC)</span>
-              <span class="info" data-bs-toggle="popover" data-bs-title="DHCP IP (fixed-address)"
-                data-bs-content="Only for By-MAC devices: becomes the DHCP fixed-address during ZTP boot. By-Serial devices get a dynamic IP from the range, so leave this blank for them.">i</span></label>
-            <input name="ip_address" class="form-control" placeholder="192.168.1.120">
-          </div>
-          <div class="col-sm-4">
-            <label class="form-label small mb-1">Management IP <span class="text-white-50">(post-ZTP)</span>
-              <span class="info" data-bs-toggle="popover" data-bs-title="Management IP after provisioning"
-                data-bs-content="The IP the device will have AFTER loading its full config — often a different/other subnet than the DHCP range (or loopback). Health check pings/SSH this IP. May be in any subnet, as long as the server has a route to it. Leave blank to reuse the DHCP IP.">i</span></label>
-            <input name="mgmt_ip" class="form-control" placeholder="10.0.30.5 (any subnet)">
-          </div>
-          <div class="col-sm-4">
-            <label class="form-label small mb-1">SSH user <span class="text-white-50">(optional)</span>
-              <span class="info" data-bs-toggle="popover" data-bs-title="Per-device SSH credential"
-                data-bs-content="Optional. If set, saved as this device's credential (overrides the Default) for health verify. Leave blank to use the Default credential.">i</span></label>
-            <input name="ssh_user" class="form-control" placeholder="root" autocomplete="off">
-          </div>
-          <div class="col-sm-4">
-            <label class="form-label small mb-1">SSH pass <span class="text-white-50">(optional)</span></label>
-            <input name="ssh_pass" type="password" class="form-control" autocomplete="new-password">
-          </div>
-          <div class="col-sm-8">
-            <label class="form-label small mb-1">Config file <span class="text-white-50">(optional)</span>
-              <span class="info" data-bs-toggle="popover" data-bs-title="Config file (optional)"
-                data-bs-content="Leave blank to let this device use the SHARED Generic Profile for its vendor-class — no per-device file needed. Pick a file only when this device needs its own specific config (then a By-MAC device also needs a DHCP IP). Devices with no file are still tracked in Bindings &amp; Health.">i</span></label>
-            <select name="specific_config_file" class="form-select">
-              <option value="">— none: use shared Generic Profile —</option>
-              {% for c in configs %}<option>{{ c }}</option>{% endfor %}
-            </select>
-          </div>
-          <div class="col-sm-4 d-flex align-items-end"><button class="btn btn-success w-100">Save &amp; Deploy</button></div>
-        </form>
+        </div>
+      </section>
 
-        <details class="mt-3"><summary class="small text-white-50">Bulk import devices (CSV / JSON)</summary>
-          <form method="post" action="/import/devices" enctype="multipart/form-data" class="row g-2 mt-1 align-items-end">
-            <div class="col-sm-6"><input type="file" name="import_file" accept=".csv,.json" class="form-control form-control-sm" required></div>
-            <div class="col-sm-3"><select name="mode" class="form-select form-select-sm"><option value="merge">merge</option><option value="replace">replace</option></select></div>
-            <div class="col-sm-3"><button class="btn btn-sm btn-glass w-100">Import</button></div>
-            <div class="form-text text-white-50">Columns: match_method, serial_number, mac_address, device_type, hostname, ip_address, mgmt_ip, specific_config_file</div>
+      <section id="network-view" class="view" hidden>
+        <div class="page-head"><div><p class="eyebrow">Workspace / Network</p><h1>Network &amp; DHCP</h1><p>Detect the interfaces, review the pool, then apply the service.</p><span id="network_refresh_status" class="form-text">Interface data is read when this page opens.</span></div><div class="action-row"><button type="button" class="btn btn-outline-secondary" id="refresh_interfaces">Refresh interfaces</button><span class="badge-state {{ 'bad' if readiness_bad else 'ok' }}">{{ 'Blocked' if readiness_bad else 'Ready' }}</span></div></div>
+        <form method="post" action="/settings" id="settings_form" class="panel">
+          <div class="section-title">1 · Interfaces</div>
+          <div class="row g-3">
+            <div class="col-md-6"><label class="form-label">Internet interface <span class="field-tag optional">Optional</span></label><select name="internet_interface" id="internet_interface" class="form-select"><option value="">Not selected</option>{% for i in interfaces %}<option value="{{ i.name }}" {{ 'selected' if i.name == settings.internet_interface }}>{{ i.name }} · {{ i.state }} · {{ i.address_text }}{% if i.default_route %} · default route{% endif %}</option>{% endfor %}</select><div class="form-text">Used for Internet access and package checks. The app does not change the OS route.</div></div>
+            <div class="col-md-6"><label class="form-label">ZTP interface (DHCP) <span class="field-tag required">Required</span></label><select name="ztp_interface" id="ztp_interface" class="form-select"><option value="">Installer-managed</option>{% for i in interfaces %}<option value="{{ i.name }}" {{ 'selected' if i.name == settings.ztp_interface }}>{{ i.name }} · {{ i.state }} · {{ i.address_text }}</option>{% endfor %}</select><div class="form-text">Must have physical link and the Server IP before DHCP can start.</div></div>
+          </div>
+          <div class="section-title">2 · DHCP pool</div>
+          <div class="row g-3">
+            <div class="col-md-4"><label class="form-label">Server IP <span class="field-tag required">Required</span><span class="field-tag exact">Exact IPv4</span></label><input name="server_ip" id="server_ip" class="form-control" value="{{ settings.server_ip }}" required></div>
+            <div class="col-md-4"><label class="form-label">Subnet <span class="field-tag required">Required</span><span class="field-tag exact">Exact IPv4</span></label><input name="subnet" id="subnet" class="form-control" value="{{ settings.subnet }}" required></div>
+            <div class="col-md-4"><label class="form-label">Mask length <span class="field-tag required">Required</span><span class="field-tag exact">0–32</span></label><input name="prefix_length" id="prefix_length" class="form-control" value="{{ pool_prefix_length }}" inputmode="numeric" pattern="^(0|[1-9]|[12][0-9]|3[0-2])$" min="0" max="32" placeholder="24" required><div class="form-text">CIDR length only, for example <code>24</code> = <code>255.255.255.0</code>.</div></div>
+            <div class="col-md-4"><label class="form-label">Range low <span class="field-tag required">Required</span><span class="field-tag exact">Exact IPv4</span></label><input name="range_low" id="range_low" class="form-control" value="{{ settings.range_low }}" required></div>
+            <div class="col-md-4"><label class="form-label">Range high <span class="field-tag required">Required</span><span class="field-tag exact">Exact IPv4</span></label><input name="range_high" id="range_high" class="form-control" value="{{ settings.range_high }}" required></div>
+          </div>
+          <div class="action-row"><button type="button" class="btn btn-outline-info" id="suggest_pool">Suggest pool</button><span id="pool_suggestion_status" class="form-text">Select a ZTP interface to calculate a pool.</span></div>
+          <div class="form-check mt-3"><input class="form-check-input" type="checkbox" name="confirm_dhcp" value="yes" id="confirm_dhcp" required><label class="form-check-label small" for="confirm_dhcp">I confirm this pool is correct and does not overlap another DHCP server. <span class="field-tag required">Required confirmation</span></label></div>
+          <div class="action-row"><button class="btn btn-primary">Save draft / Apply DHCP</button><a href="/preview" target="_blank" class="btn btn-outline-secondary">Preview DHCP</a><span class="form-text">A draft is saved even when the interface is not ready; production restart remains blocked.</span></div>
+        </form>
+        <div class="two-col mt-3">
+          <div class="panel"><div class="panel-head"><div><h2>Pool validation</h2><p>Structural checks before any DHCP file is written.</p></div><span class="badge-state {{ 'bad' if pool_errors else 'ok' }}">{{ 'Review' if pool_errors else 'Valid' }}</span></div>{% if pool_errors %}<ul class="check-list">{% for message in pool_errors %}<li><span class="check-dot bad"></span><span>{{ message }}</span></li>{% endfor %}</ul>{% else %}<div class="alert alert-success mb-0">Pool fields are valid.</div>{% endif %}</div>
+          <div class="panel"><div class="panel-head"><div><h2>Network readiness</h2><p>Live interface checks used by the production safety gate.</p></div><span class="badge-state {{ 'bad' if network_checks else 'ok' }}">{{ 'Blocked' if network_checks else 'Passed' }}</span></div>{% if network_checks %}<ul class="check-list">{% for message in network_checks %}<li><span class="check-dot {{ 'bad' if 'ERROR:' in message else 'warn' }}"></span><span>{{ message }}</span></li>{% endfor %}</ul>{% else %}<div class="alert alert-success mb-0">Interface and Server IP are ready.</div>{% endif %}</div>
+        </div>
+      </section>
+
+      <section id="configs-view" class="view" hidden>
+        <div class="page-head"><div><p class="eyebrow">Workspace / Configs</p><h1>Config files</h1><p>Upload, review, and remove files offered through HTTP.</p></div><span class="badge-state {{ 'ok' if configs else 'warn' }}">{{ configs|length }} file(s)</span></div>
+        <div class="panel"><div class="panel-head"><div><h2>Upload config</h2><p>Allowed: {{ allowed_ext }}. Each file is checked for root authentication and image-upgrade loops.</p></div></div><form method="post" action="/upload" enctype="multipart/form-data" class="d-flex flex-wrap gap-2"><label class="form-label mb-0 align-self-center">Config file <span class="field-tag required">Required</span></label><input type="file" name="config_file" class="form-control" style="max-width:520px" required><button class="btn btn-primary">Upload file</button></form></div>
+        <div class="panel"><div class="panel-head"><div><h2>Config inventory</h2><p>Open a file to review its content. Use Validation for rule details.</p></div></div><div class="table-wrap"><table class="table"><thead><tr><th>File</th><th>Status</th><th></th></tr></thead><tbody>{% for c in configs %}{% set issues = config_checks.get(c, []) %}<tr><td><a href="/configs/{{ c }}" target="_blank" class="mono">{{ c }}</a></td><td>{% if issues %}<span class="badge-state warn">{{ issues|length }} issue(s)</span>{% else %}<span class="badge-state ok">OK</span>{% endif %}</td><td class="text-end"><form method="post" action="/delete_config/{{ c }}" onsubmit="return confirm('Delete {{ c }}?')"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr>{% else %}<tr><td colspan="3" class="empty">No config files yet.</td></tr>{% endfor %}</tbody></table></div></div>
+      </section>
+
+      <section id="devices-view" class="view" hidden>
+        <div class="page-head"><div><p class="eyebrow">Workspace / Devices</p><h1>Device mapping</h1><p>Map device identity to a DHCP address and configuration file.</p></div><span class="badge-state ok">{{ devices|length }} specific · {{ profiles|length }} profiles</span></div>
+        <div class="mapping-guide"><div class="guide-card"><h3>Specific Device</h3><p>Use for one device that needs an exact identity, DHCP IP, or dedicated config file.</p></div><div class="guide-card"><h3>Generic Profile</h3><p>Use for a group of devices with the same vendor class and shared config file.</p></div></div>
+        <div class="mapping-order"><b>How matching works:</b> Specific MAC/Serial mapping is checked first. If no specific rule matches, the device falls back to a Generic Profile by vendor class.</div>
+        <div class="input-rules"><strong>Input rules</strong><ul class="rule-list mt-2"><li><span><span class="field-tag required">Required</span> must be entered before saving.</span></li><li><span><span class="field-tag optional">Optional</span> can be left blank; blank config uses the Generic Profile fallback.</span></li><li><span><span class="field-tag exact">Exact</span> means the value must match the device value.</span></li><li><span><span class="field-tag pattern">Pattern</span> is used for vendor class / serial suffix; arbitrary <code>*</code> regex is not accepted.</span></li><li><span><span class="field-tag conditional">Option 60 test</span> Capture the real DHCP value before enabling a Serial or Generic rule.</span></li></ul></div>
+        {% if mapping_issues %}<div class="alert alert-warning mt-3 mb-0"><b>Rule review required.</b><ul class="mb-0 mt-2">{% for issue in mapping_issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}
+        <div class="panel"><div class="panel-head"><div><h2>Add specific device</h2><p>Use Serial or MAC matching. Save &amp; Deploy updates the DHCP mapping.</p></div><div><a href="/export/devices.csv" class="btn btn-sm btn-outline-secondary me-1">Export CSV</a><a href="/export/devices.json" class="btn btn-sm btn-outline-secondary">JSON</a></div></div>
+          <form method="post" action="/deploy">
+            <div class="form-group-block"><div class="form-group-title">1 · Device identity</div><div class="row g-3 align-items-end">
+              <div class="col-md-3"><label class="form-label">Match by <span class="field-tag required">Required</span></label><select name="match_method" id="method" class="form-select" onchange="toggleId()"><option value="serial">Serial number</option><option value="mac">MAC address</option></select><div class="form-text">Serial reads DHCP Option 60. MAC reads the client hardware address.</div></div>
+              <div class="col-md-5" id="serial_box"><label class="form-label">Serial number <span class="field-tag required">Required for Serial</span><span class="field-tag pattern">Suffix pattern</span></label><input name="serial_number" id="serial_number" class="form-control" placeholder="ZG1234567890"><div class="form-text">Enter the exact alphanumeric suffix shown at the end of DHCP Option 60.</div></div>
+              <div class="col-md-5 d-none" id="mac_box"><label class="form-label">MAC address <span class="field-tag required">Required for MAC</span><span class="field-tag exact">Exact match</span></label><input name="mac_address" id="mac_address" class="form-control" placeholder="2c:6b:f5:01:02:03" pattern="^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"><div class="form-text">Use the device hardware MAC. Matching is exact; upper/lower case is normalized.</div></div>
+              <div class="col-md-4"><label class="form-label">Device type <span class="field-tag optional">Optional label</span></label><input name="device_type" class="form-control" placeholder="EX2300-48P"></div>
+              <div class="col-md-4"><label class="form-label">Hostname <span class="field-tag required">Required</span><span class="field-tag exact">Exact for health</span></label><input name="hostname" class="form-control" placeholder="edge-hcm-01" required><div class="form-text">Must match the hostname returned by the device health check.</div></div>
+            </div></div>
+            <div class="form-group-block"><div class="form-group-title">2 · Network assignment</div><div class="row g-3 align-items-end">
+              <div class="col-md-4"><label class="form-label">DHCP IP <span class="field-tag optional">Optional</span><span class="field-tag conditional">Required for MAC + config</span></label><input name="ip_address" class="form-control" placeholder="192.168.250.20"><div class="form-text">Leave blank for Serial matching; it will use the dynamic pool.</div></div>
+              <div class="col-md-4"><label class="form-label">Management IP <span class="field-tag optional">Optional</span><span class="field-tag exact">Exact IP</span></label><input name="mgmt_ip" class="form-control" placeholder="10.0.30.5"><div class="form-text">Health checks ping/SSH this IP after the device loads its config.</div></div>
+            </div></div>
+            <div class="form-group-block"><div class="form-group-title">3 · Provisioning</div><div class="row g-3 align-items-end">
+              <div class="col-md-8"><label class="form-label">Specific config file <span class="field-tag optional">Optional</span><span class="field-tag exact">Selected file</span></label><select name="specific_config_file" class="form-select"><option value="">None — use Generic Profile</option>{% for c in configs %}<option>{{ c }}</option>{% endfor %}</select><div class="form-text">Leave blank when this device should use a shared Generic Profile.</div></div>
+              <div class="col-md-4"><button class="btn btn-primary w-100">Save &amp; Deploy</button><div class="form-text mt-1">Saves the mapping and regenerates DHCP rules.</div></div>
+            </div></div>
+            <details class="hidden-details"><summary>Advanced: SSH override <span class="field-tag optional">Optional</span></summary><div class="row g-3 mt-1"><div class="col-md-4"><label class="form-label">SSH user <span class="field-tag optional">Optional</span></label><input name="ssh_user" class="form-control" placeholder="root" autocomplete="off"></div><div class="col-md-4"><label class="form-label">SSH password <span class="field-tag optional">Optional</span></label><input name="ssh_pass" type="password" class="form-control" autocomplete="new-password"></div><div class="col-md-4"><div class="form-text mt-4">Leave blank to use the Default credential.</div></div></div></details>
           </form>
-        </details>
-
-        <table class="table table-sm align-middle mt-3 mb-0">
-          <thead><tr><th>Method</th><th>Identifier</th><th>Type</th><th>Hostname</th><th>DHCP IP</th><th>Mgmt IP</th><th>Config</th><th></th></tr></thead>
-          <tbody>
-            {% for d in devices %}<tr>
-              <td><span class="badge {{ 'bg-info' if d.match_method=='serial' else 'bg-secondary' }}">{{ d.match_method }}</span></td>
-              <td class="mono">{{ d.serial_number or d.mac_address }}</td>
-              <td>{{ d.device_type }}</td><td>{{ d.hostname }}</td>
-              <td class="mono">{{ d.ip_address or '—' }}</td><td class="mono">{{ d.mgmt_ip or '—' }}</td>
-              <td class="mono">{{ d.specific_config_file }}</td>
-              <td><form method="post" action="/delete/{{ d.hostname }}"><button class="btn btn-sm btn-outline-danger py-0">×</button></form></td>
-            </tr>{% else %}<tr><td colspan="8" class="text-white-50">No devices yet</td></tr>{% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Generic profiles -->
-      <div class="glass p-4">
-        <div class="card-h mb-3 d-flex justify-content-between">
-          <span>Generic Profiles <span class="text-white-50 text-lowercase">— fallback by vendor-class</span></span>
-          <span class="text-lowercase"><a href="/export/profiles.csv" class="me-2">export CSV</a><a href="/export/profiles.json">JSON</a></span>
+          <details class="hidden-details"><summary>Bulk import devices</summary><form method="post" action="/import/devices" enctype="multipart/form-data" class="row g-2 mt-2 align-items-end"><div class="col-md-6"><input type="file" name="import_file" accept=".csv,.json" class="form-control form-control-sm" required></div><div class="col-md-3"><select name="mode" class="form-select form-select-sm"><option value="merge">merge</option><option value="replace">replace</option></select></div><div class="col-md-3"><button class="btn btn-sm btn-outline-secondary w-100">Import</button></div><div class="form-text">Columns: match_method, serial_number, mac_address, device_type, hostname, ip_address, mgmt_ip, specific_config_file</div></form></details>
         </div>
-        <form method="post" action="/add_profile" class="row g-2 align-items-end">
-          <div class="col-sm-3">
-            <label class="form-label small mb-1">Label</label>
-            <input name="label" class="form-control" placeholder="EX family">
-          </div>
-          <div class="col-sm-4">
-            <label class="form-label small mb-1">Vendor-class match
-              <span class="info" data-bs-toggle="popover" data-bs-title="Vendor-class (Option 60)"
-                data-bs-content="MUST be the real DHCP Option 60 string the device sends, or a prefix of it (e.g. Juniper-ex2300). Used as a regex 'contains' match (~=). This one DOES need correct naming — capture it via tcpdump/dhcpd log. The Device-type label above does not.">i</span></label>
-            <input name="vendor_class" class="form-control" placeholder="Juniper-ex2300" required>
-          </div>
-          <div class="col-sm-3">
-            <label class="form-label small mb-1">Config file</label>
-            <select name="config_file" class="form-select" required>
-              <option value="">— select —</option>
-              {% for c in configs %}<option>{{ c }}</option>{% endfor %}
-            </select>
-          </div>
-          <div class="col-sm-2"><button class="btn btn-glass w-100">Add</button></div>
-        </form>
+        <div class="panel"><div class="panel-head"><div><h2>Specific devices</h2><p>Devices with dedicated identity and config rules.</p></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Method</th><th>Identifier</th><th>Hostname</th><th>DHCP IP</th><th>Mgmt IP</th><th>Config</th><th></th></tr></thead><tbody>{% for d in devices %}<tr><td><span class="badge-state ok">{{ d.match_method }}</span></td><td class="mono">{{ d.serial_number or d.mac_address }}</td><td>{{ d.hostname }}</td><td class="mono">{{ d.ip_address or '—' }}</td><td class="mono">{{ d.mgmt_ip or '—' }}</td><td class="mono">{{ d.specific_config_file or 'profile' }}</td><td class="text-end"><form method="post" action="/delete/{{ d.hostname }}"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr>{% else %}<tr><td colspan="7" class="empty">No specific devices yet.</td></tr>{% endfor %}</tbody></table></div></div>
+        <div class="panel"><div class="panel-head"><div><h2>Generic profiles</h2><p>Shared fallback rules by DHCP vendor class.</p></div><div><a href="/export/profiles.csv" class="btn btn-sm btn-outline-secondary me-1">Export CSV</a><a href="/export/profiles.json" class="btn btn-sm btn-outline-secondary">JSON</a></div></div><form method="post" action="/add_profile" class="row g-3 align-items-end"><div class="col-md-3"><label class="form-label">Label <span class="field-tag optional">Optional label</span></label><input name="label" class="form-control" placeholder="EX family"><div class="form-text">Display name only; does not affect matching.</div></div><div class="col-md-4"><label class="form-label">Vendor class / regex <span class="field-tag required">Required</span></label><input name="vendor_class" class="form-control" placeholder="qfx5120-48YM?$" required><div class="form-text">Enter the value or regex from DHCP Option 60. Quotes/newlines are not allowed.</div></div><div class="col-md-2"><label class="form-label">Match mode <span class="field-tag required">Required</span></label><select name="match_mode" class="form-select"><option value="contains">Contains (literal)</option><option value="regex">Regex</option></select></div><div class="col-md-2"><label class="form-label">Config file <span class="field-tag required">Required</span></label><select name="config_file" class="form-select" required><option value="">Select</option>{% for c in configs %}<option>{{ c }}</option>{% endfor %}</select></div><div class="col-md-1"><button class="btn btn-primary w-100">Add</button></div></form><div class="form-text mt-2">Examples: <code>qfx5120-48Y</code> (Contains) · <code>qfx5120-48YM?$</code> (Regex suffix). Test against the real Option 60 before production.</div><details class="hidden-details"><summary>Bulk import profiles</summary><form method="post" action="/import/profiles" enctype="multipart/form-data" class="row g-2 mt-2 align-items-end"><div class="col-md-6"><input type="file" name="import_file" accept=".csv,.json" class="form-control form-control-sm" required></div><div class="col-md-3"><select name="mode" class="form-select form-select-sm"><option value="merge">merge</option><option value="replace">replace</option></select></div><div class="col-md-3"><button class="btn btn-sm btn-outline-secondary w-100">Import</button></div></form></details><div class="table-wrap mt-3"><table class="table"><thead><tr><th>Label</th><th>Value</th><th>Mode</th><th>Config</th><th></th></tr></thead><tbody>{% for p in profiles %}<tr><td>{{ p.label }}</td><td class="mono">{{ p.vendor_class }}</td><td><span class="badge-state {{ 'warn' if p.match_mode == 'regex' else 'ok' }}">{{ p.match_mode or 'contains' }}</span></td><td class="mono">{{ p.config_file }}</td><td class="text-end"><form method="post" action="/delete_profile/{{ loop.index0 }}"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr>{% else %}<tr><td colspan="5" class="empty">No generic profiles yet.</td></tr>{% endfor %}</tbody></table></div></div>
+      </section>
 
-        <details class="mt-3"><summary class="small text-white-50">Bulk import profiles (CSV / JSON)</summary>
-          <form method="post" action="/import/profiles" enctype="multipart/form-data" class="row g-2 mt-1 align-items-end">
-            <div class="col-sm-6"><input type="file" name="import_file" accept=".csv,.json" class="form-control form-control-sm" required></div>
-            <div class="col-sm-3"><select name="mode" class="form-select form-select-sm"><option value="merge">merge</option><option value="replace">replace</option></select></div>
-            <div class="col-sm-3"><button class="btn btn-sm btn-glass w-100">Import</button></div>
-            <div class="form-text text-white-50">Columns: label, vendor_class, config_file</div>
-          </form>
-        </details>
+      <section id="validation-view" class="view" hidden>
+        <div class="page-head"><div><p class="eyebrow">Workspace / Validation</p><h1>Validation &amp; rules</h1><p>Review the checks that protect a Junos ZTP deployment.</p></div><button type="button" class="btn btn-outline-secondary" data-view="configs-view">Open configs</button></div>
+        <div class="two-col"><div class="panel"><div class="panel-head"><div><h2>Rules</h2><p>These checks run before a config is offered to a device.</p></div></div><ul class="check-list"><li><span class="check-dot ok"></span><span>Config includes <code>root-authentication</code>.</span></li><li><span class="check-dot ok"></span><span>Config does not start an unwanted auto-image-upgrade loop.</span></li><li><span class="check-dot ok"></span><span>HTTP config URL is shorter than 256 characters.</span></li><li><span class="check-dot warn"></span><span>Do not run a manual commit while ZTP is in progress.</span></li></ul></div><div class="panel"><div class="panel-head"><div><h2>Config status</h2><p>Open Configs to upload or remove a file.</p></div></div>{% if configs %}<ul class="check-list">{% for c in configs %}{% set issues = config_checks.get(c, []) %}<li><span class="check-dot {{ 'warn' if issues else 'ok' }}"></span><span><b>{{ c }}</b><br><small>{{ issues|join(' · ') if issues else 'All file checks passed.' }}</small></span></li>{% endfor %}</ul>{% else %}<div class="empty">No config files to validate.</div>{% endif %}</div></div>
+        <div class="panel mt-3"><div class="panel-head"><div><h2>Device matching reference</h2><p>Use this before creating a Specific Device or Generic Profile.</p></div></div><ul class="check-list"><li><span class="check-dot ok"></span><span><span class="field-tag exact">Exact</span> MAC address: matches the client hardware address exactly.</span></li><li><span class="check-dot ok"></span><span><span class="field-tag pattern">Pattern</span> Serial number: matches the ending serial suffix in DHCP Option 60; regex is not supported for Serial.</span></li><li><span class="check-dot ok"></span><span><span class="field-tag pattern">Contains / Regex</span> Vendor class: choose literal substring matching or validated regex in Generic Profile.</span></li><li><span class="check-dot ok"></span><span><span class="field-tag exact">Exact</span> Hostname: compared with the hostname returned by the health check.</span></li></ul></div>
+      </section>
 
-        <table class="table table-sm align-middle mt-3 mb-0">
-          <thead><tr><th>Label</th><th>Vendor-class (~=)</th><th>Config</th><th></th></tr></thead>
-          <tbody>
-            {% for p in profiles %}<tr>
-              <td>{{ p.label }}</td><td class="mono">{{ p.vendor_class }}</td><td class="mono">{{ p.config_file }}</td>
-              <td><form method="post" action="/delete_profile/{{ loop.index0 }}"><button class="btn btn-sm btn-outline-danger py-0">×</button></form></td>
-            </tr>{% else %}<tr><td colspan="4" class="text-white-50">No profiles yet</td></tr>{% endfor %}
-          </tbody>
-        </table>
-      </div>
+      <section id="admin-view" class="view" hidden>
+        <div class="page-head"><div><p class="eyebrow">Operations / Administration</p><h1>Administration</h1><p>Manage health-check credentials and the web login.</p></div></div>
+        <div class="panel mb-3"><div class="panel-head"><div><h2>Service control</h2><p>Restart only the ZTP web service. DHCP and Nginx are not restarted by this action.</p></div><span class="badge-state ok">systemd</span></div><form id="restart_service_form" method="post" action="/service/restart" class="action-row"><button type="submit" class="btn btn-outline-danger">Restart ZTP service</button><span id="service_restart_status" class="form-text">Use after updating the application or templates.</span></form></div>
+        <div class="two-col"><div class="panel"><div class="panel-head"><div><h2>SSH credentials</h2><p>Used by Bindings &amp; Health. Passwords are not displayed.</p></div></div><form method="post" action="/set_creds" class="row g-3 align-items-end"><div class="col-12"><label class="form-label">Apply to</label><select name="scope" class="form-select"><option value="default">Default (all devices)</option>{% for d in devices %}<option value="{{ d.hostname }}">{{ d.hostname }}</option>{% endfor %}</select></div><div class="col-md-6"><label class="form-label">Username</label><input name="username" class="form-control" required></div><div class="col-md-6"><label class="form-label">Password</label><input name="password" type="password" class="form-control" required></div><div class="col-12"><button class="btn btn-primary">Save credential</button></div></form><div class="form-text mt-3">Default: <b>{{ creds.default or 'not set' }}</b> · Per-host: {{ creds.by_host.keys()|list|join(', ') if creds.by_host else 'none' }}</div></div>
+          <div class="panel"><div class="panel-head"><div><h2>Admin login</h2><p>Change the default login before leaving the isolated lab.</p></div></div><form method="post" action="/account/change_password" class="row g-3 align-items-end"><div class="col-12"><label class="form-label">Current password</label><input name="current_password" type="password" class="form-control" required autocomplete="current-password"></div><div class="col-12"><label class="form-label">New username <span class="text-muted">(optional)</span></label><input name="new_username" class="form-control" autocomplete="off"></div><div class="col-12"><label class="form-label">New password</label><input name="new_password" type="password" class="form-control" required autocomplete="new-password"></div><div class="col-12"><button class="btn btn-primary">Update login</button></div></form></div></div>
+      </section>
+
+      <footer>ztp-app {{ version }} · UI v2 · Built by {{ author }}</footer>
     </div>
-  </div>
-
-  <footer class="text-center mt-4">Built by {{ author }} &middot; v{{ version }}</footer>
+  </main>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 function toggleId(){
-  const isSerial = document.getElementById('method').value === 'serial';
+  const method = document.getElementById('method');
+  if (!method) return;
+  const isSerial = method.value === 'serial';
   document.getElementById('serial_box').classList.toggle('d-none', !isSerial);
   document.getElementById('mac_box').classList.toggle('d-none', isSerial);
   document.getElementById('serial_number').required = isSerial;
   document.getElementById('mac_address').required = !isSerial;
 }
 toggleId();
-document.querySelectorAll('[data-bs-toggle="popover"]').forEach(el =>
-  new bootstrap.Popover(el, {trigger:'focus hover', html:false}));
+document.querySelectorAll('[data-bs-toggle="popover"]').forEach(el => new bootstrap.Popover(el, {trigger:'focus hover', html:false}));
+
+const ztpInterface = document.querySelector('select[name="ztp_interface"]');
+const suggestionButton = document.getElementById('suggest_pool');
+const suggestionStatus = document.getElementById('pool_suggestion_status');
+const poolFields = ['server_ip', 'subnet', 'prefix_length', 'range_low', 'range_high'];
+async function suggestPool(){
+  if (!ztpInterface || !suggestionButton) return;
+  const name = ztpInterface.value;
+  if (!name) { suggestionStatus.textContent = 'Select a ZTP interface first.'; suggestionStatus.className = 'form-text text-warning'; return; }
+  suggestionStatus.textContent = 'Reading interface IPv4/CIDR…'; suggestionStatus.className = 'form-text text-info';
+  try {
+    const response = await fetch('/settings/suggest?ztp_interface=' + encodeURIComponent(name), {headers:{'Accept':'application/json'}});
+    const result = await response.json();
+    if (!result.ok) { suggestionStatus.textContent = result.errors.join(' '); suggestionStatus.className = 'form-text text-danger'; return; }
+    for (const field of poolFields) document.getElementById(field).value = result.values[field];
+    document.getElementById('confirm_dhcp').checked = false;
+    const warning = (result.warnings || []).join(' ');
+    suggestionStatus.textContent = 'Suggested from ' + result.interface + ' (' + result.cidr + '). ' + (warning || 'Review and confirm before saving.');
+    suggestionStatus.className = 'form-text ' + (warning ? 'text-warning' : 'text-success');
+  } catch (error) { suggestionStatus.textContent = 'Could not read interface details.'; suggestionStatus.className = 'form-text text-danger'; }
+}
+if (suggestionButton) suggestionButton.addEventListener('click', suggestPool);
+if (ztpInterface) ztpInterface.addEventListener('change', suggestPool);
+
+const refreshButton = document.getElementById('refresh_interfaces');
+const internetInterface = document.getElementById('internet_interface');
+const refreshStatus = document.getElementById('network_refresh_status');
+function updateInterfaceSelect(select, interfaces, emptyLabel, preserve){
+  if (!select) return;
+  const current = preserve || select.value;
+  select.innerHTML = '<option value="">' + emptyLabel + '</option>';
+  interfaces.forEach(item => {
+    const option = document.createElement('option');
+    option.value = item.name;
+    option.textContent = item.name + ' · ' + item.state + ' · ' + item.address_text +
+      (item.default_route ? ' · default route' : '');
+    select.appendChild(option);
+  });
+  if ([...select.options].some(option => option.value === current)) select.value = current;
+}
+async function refreshInterfaces(){
+  if (!refreshButton) return;
+  refreshButton.disabled = true;
+  if (refreshStatus) refreshStatus.textContent = 'Refreshing interface state…';
+  try {
+    const response = await fetch('/api/network', {headers:{'Accept':'application/json'}});
+    const result = await response.json();
+    const internetCurrent = internetInterface ? internetInterface.value : '';
+    const ztpCurrent = ztpInterface ? ztpInterface.value : '';
+    updateInterfaceSelect(internetInterface, result.interfaces, 'Not selected', internetCurrent);
+    updateInterfaceSelect(ztpInterface, result.interfaces, 'Installer-managed', ztpCurrent);
+    const ztp = result.interfaces.find(item => item.name === ztpCurrent);
+    if (refreshStatus) refreshStatus.textContent = ztp
+      ? 'Updated: ' + ztp.name + ' · ' + ztp.state + ' · ' + ztp.address_text + '. Click Suggest pool to recalculate values.'
+      : 'Interface state updated.';
+    if (ztp && ztp.addresses && ztp.addresses.length && suggestionStatus && suggestionStatus.textContent.includes('no IPv4')) {
+      suggestionStatus.textContent = 'IPv4 detected. Click Suggest pool to calculate the DHCP values.';
+      suggestionStatus.className = 'form-text text-success';
+    }
+  } catch (error) {
+    if (refreshStatus) refreshStatus.textContent = 'Could not refresh interface state.';
+  } finally { refreshButton.disabled = false; }
+}
+if (refreshButton) {
+  refreshButton.addEventListener('click', refreshInterfaces);
+  window.setInterval(refreshInterfaces, 15000);
+}
+
+const restartForm = document.getElementById('restart_service_form');
+const restartStatus = document.getElementById('service_restart_status');
+if (restartForm) restartForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!window.confirm('Restart the ZTP web service now? The current UI connection will briefly reset.')) return;
+  const button = restartForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  restartStatus.textContent = 'Requesting service restart…';
+  try {
+    const response = await fetch('/service/restart', {method:'POST', headers:{'Accept':'application/json'}});
+    const result = await response.json();
+    restartStatus.textContent = result.message;
+    restartStatus.className = 'form-text ' + (result.ok ? 'text-success' : 'text-danger');
+    if (result.ok) window.setTimeout(() => window.location.reload(), 3500);
+  } catch (error) {
+    restartStatus.textContent = 'The service may be restarting. Reload this page in a few seconds.';
+    restartStatus.className = 'form-text text-warning';
+    window.setTimeout(() => window.location.reload(), 5000);
+  } finally { button.disabled = false; }
+});
+
+const views = document.querySelectorAll('.view');
+const viewLinks = document.querySelectorAll('[data-view]');
+function showView(name, updateHash=true){
+  const target = document.getElementById(name) ? name : 'overview-view';
+  views.forEach(view => view.hidden = view.id !== target);
+  viewLinks.forEach(link => { if (link.tagName === 'BUTTON') link.classList.toggle('active', link.dataset.view === target); });
+  if (updateHash) history.replaceState(null, '', '#' + target);
+}
+viewLinks.forEach(link => link.addEventListener('click', () => showView(link.dataset.view)));
+showView(location.hash.replace('#','') || 'overview-view', false);
 </script>
 </body>
 </html>

@@ -35,7 +35,7 @@ subnet {{ subnet }} netmask {{ netmask }} {
 {% set ns.first = false %}
 {% endfor %}
 {% for p in profiles %}
-    {% if ns.first %}if{% else %}elsif{% endif %} option vendor-class-identifier ~= "{{ p.vendor_class }}" {
+    {% if ns.first %}if{% else %}elsif{% endif %} option vendor-class-identifier ~= "{{ p.match_expression }}" {
         option NEW_OP.transfer-mode "http";
         option NEW_OP.config-file-name "configs/{{ p.config_file }}";
     }

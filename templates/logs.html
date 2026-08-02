@@ -4,85 +4,44 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ZTP Manager — Logs</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%231b6ef3'/%3E%3Ctext%20x='32'%20y='42'%20font-size='30'%20font-family='Arial'%20font-weight='bold'%20fill='white'%20text-anchor='middle'%3EZ+%3C/text%3E%3C/svg%3E">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { min-height:100vh; color:#e8edf4; font-size:.95rem;
-      background: radial-gradient(1100px 560px at 8% -12%, #173a6b 0, transparent 60%),
-        radial-gradient(900px 480px at 112% 8%, #38206b 0, transparent 55%), #0a0f1d; }
-    .glass { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.15);
-      backdrop-filter:blur(16px); border-radius:16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
-    .table{ color:#e8edf4; --bs-table-bg:transparent; --bs-table-color:#e8edf4; }
-    .table>:not(caption)>*>*{ border-color:rgba(255,255,255,.10); color:#e8edf4; }
-    .table thead th{ color:#9fb3d0; font-weight:600; }
-    .card-h{ font-size:.78rem; letter-spacing:.12em; text-transform:uppercase; color:#8fb6ff; }
-    .btn-glass{ background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.15); color:#fff; }
-    .navbar{ border-bottom:1px solid rgba(255,255,255,.15); } a{ color:#9ad0ff; }
-    pre.log{ background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.12); border-radius:10px;
-      color:#cfe3ff; padding:.8rem; max-height:320px; overflow:auto; font-size:.78rem; }
-    code,.mono{ color:#9ad0ff; font-family:ui-monospace,Consolas,monospace; font-size:.82rem; }
-    footer{ color:rgba(255,255,255,.4); font-size:.8rem; }
+    :root { --navy:#102a43; --blue:#185abd; --bg:#f4f6f9; --surface:#fff; --text:#172b4d; --muted:#667085; --border:#d8e0ea; --success:#147d4f; --success-bg:#e8f6ef; --warning:#946200; --warning-bg:#fff5d6; --danger:#b42318; --danger-bg:#fdeceb; --shadow:0 2px 8px rgba(16,42,67,.08); }
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:14px/1.45 Inter,Segoe UI,Arial,sans-serif} a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline} code,.mono{color:#075985;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}
+    .app-shell{display:flex;min-height:100vh}.sidebar{width:236px;flex:0 0 236px;background:var(--navy);color:#dbeafe;padding:20px 14px;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:10px;padding:0 10px 24px;border-bottom:1px solid rgba(255,255,255,.14);font-size:18px;font-weight:700;color:#fff}.brand-mark{width:30px;height:30px;border-radius:6px;display:grid;place-items:center;background:#2f80ed;color:#fff;font-weight:800}.brand small{display:block;color:#9bb7d2;font-size:10px;font-weight:500;letter-spacing:.06em}.side-label{color:#8eabc7;font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:22px 10px 7px}.side-link{display:flex;align-items:center;gap:10px;width:100%;padding:10px 11px;margin:2px 0;border:0;border-radius:6px;background:transparent;color:#dbeafe;text-align:left;font:inherit;cursor:pointer}.side-link:hover{background:rgba(255,255,255,.08);color:#fff}.side-link.active{background:#2f80ed;color:#fff}.side-icon{width:20px;color:#a9c4df;text-align:center;font-weight:700}.side-link.active .side-icon{color:#fff}.side-footer{margin-top:auto;padding:18px 10px 0;border-top:1px solid rgba(255,255,255,.14);color:#9bb7d2;font-size:12px}.main{min-width:0;flex:1}.topbar{height:64px;padding:0 30px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:20px}.topbar-title{font-weight:700;color:var(--navy)}.topbar-meta{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px}.content{max-width:1500px;margin:0 auto;padding:28px 30px 48px}.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:22px}.eyebrow{margin:0 0 4px;color:var(--blue);font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}h1{margin:0;color:var(--navy);font-size:27px;letter-spacing:-.02em}h2{margin:0;color:var(--navy);font-size:16px}.page-head p{margin:5px 0 0;color:var(--muted)}.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:22px}.panel+.panel{margin-top:18px}.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.panel-head p{margin:4px 0 0;color:var(--muted);font-size:12px}.metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:20px}.metric{background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:17px 18px}.metric-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.metric-value{margin-top:7px;color:var(--navy);font-size:22px;font-weight:750}.metric-note{margin-top:3px;color:var(--muted);font-size:12px}.status-banner{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:17px 20px;margin-bottom:20px;border:1px solid var(--border);border-left:4px solid var(--blue);border-radius:8px;background:#fff;box-shadow:var(--shadow)}.status-title{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.status-line{margin-top:5px;color:var(--text)}.badge-state{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}.badge-state.ok{color:var(--success);background:var(--success-bg)}.badge-state.warn{color:var(--warning);background:var(--warning-bg)}.badge-state.bad{color:var(--danger);background:var(--danger-bg)}.btn{border-radius:5px;font-size:13px;font-weight:650}.btn-outline-secondary{color:#475467;border-color:#b9c4d0}.table-wrap{overflow:auto;border:1px solid var(--border);border-radius:6px}.table{margin:0;color:var(--text);font-size:12px}.table thead th{background:#f7f9fb;color:#475467;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}.table>:not(caption)>*>*{padding:11px;border-color:#edf1f5;vertical-align:middle}.empty{color:var(--muted);padding:20px 10px;text-align:center}.hidden-details{margin-top:18px}.hidden-details summary{color:var(--blue);cursor:pointer;font-size:12px;font-weight:650}pre.log{margin:14px 0 0;max-height:360px;overflow:auto;padding:14px;background:#111827;border:1px solid #27364a;border-radius:6px;color:#d1e4ff;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap}footer{margin-top:28px;color:#98a2b3;font-size:11px;text-align:center}@media(max-width:1100px){.sidebar{width:202px;flex-basis:202px}}@media(max-width:720px){.app-shell{display:block}.sidebar{width:100%;padding:12px}.brand{padding-bottom:12px}.side-label,.side-footer{display:none}.side-nav{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}.side-link{width:auto;padding:8px 10px}.topbar{padding:0 16px}.topbar-meta span{display:none}.content{padding:20px 14px 36px}.page-head{display:block}.metric-grid{grid-template-columns:1fr}.status-banner{display:block}}
   </style>
 </head>
 <body>
-<nav class="navbar px-4 py-3 mb-4 d-flex justify-content-between">
-  <span class="navbar-brand text-white fw-bold mb-0">ZTP&nbsp;Manager — Logs</span>
-  <div class="d-flex align-items-center gap-2">
-    <a href="/" class="btn btn-sm btn-glass">Dashboard</a>
-    <a href="/bindings" class="btn btn-sm btn-glass">Bindings &amp; Health</a>
-    <a href="/logs" class="btn btn-sm btn-glass">Refresh</a>
-  </div>
-</nav>
-
-<div class="container-fluid px-4 pb-4">
-
-  <!-- Config fetches (the key ZTP signal) -->
-  <div class="glass p-4 mb-4">
-    <div class="card-h mb-2 d-flex justify-content-between">
-      <span>Config fetches — which device downloaded which config (nginx {{ nginx_path }})</span>
-      <a href="/logs/export/nginx" class="text-lowercase">export</a>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">Z</span><span>ZTP Manager<small>Operations Console</small></span></div>
+    <div class="side-label">Workspace</div>
+    <nav class="side-nav">
+      <a class="side-link" href="/"><span class="side-icon">◼</span>Overview</a>
+      <a class="side-link" href="/#network-view"><span class="side-icon">⌁</span>Network</a>
+      <a class="side-link" href="/#devices-view"><span class="side-icon">◇</span>Devices</a>
+      <a class="side-link" href="/#configs-view"><span class="side-icon">□</span>Configs</a>
+      <a class="side-link" href="/#validation-view"><span class="side-icon">✓</span>Validation</a>
+    </nav>
+    <div class="side-label">Operations</div>
+    <nav class="side-nav">
+      <a class="side-link" href="/bindings"><span class="side-icon">↔</span>Health</a>
+      <a class="side-link active" href="/logs"><span class="side-icon">≡</span>Logs</a>
+      <a class="side-link" href="/#admin-view"><span class="side-icon">⚙</span>Administration</a>
+    </nav>
+    <div class="side-footer">UI v2 · {{ version }}<br>Option 66: <code>{{ settings.server_ip }}</code></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div class="topbar-title">ZTP deployment workspace</div><div class="topbar-meta"><span>Logs</span><span>Option 66 <code>{{ settings.server_ip }}</code></span><a class="btn btn-sm btn-outline-secondary" href="/logs">Refresh</a></div></header>
+    <div class="content">
+      <div class="page-head"><div><p class="eyebrow">Operations / Logs</p><h1>Logs</h1><p>Follow the ZTP path from DHCP lease to HTTP config fetch.</p></div><div class="action-row"><a href="/logs/export/nginx" class="btn btn-outline-secondary">Export fetches</a></div></div>
+      <div class="status-banner"><div><div class="status-title">Primary signal</div><div class="status-line">A config fetch with HTTP <b>200</b> confirms that a device downloaded its ZTP file.</div></div><span class="badge-state {{ 'ok' if fetches else 'warn' }}">{{ 'Fetches found' if fetches else 'No fetches' }}</span></div>
+      <div class="metric-grid"><div class="metric"><div class="metric-label">Config fetches</div><div class="metric-value">{{ fetches|length }}</div><div class="metric-note">from {{ nginx_path }}</div></div><div class="metric"><div class="metric-label">DHCP log</div><div class="metric-value">{{ 'Available' if dhcp_log else 'Empty' }}</div><div class="metric-note">{{ syslog_path }}</div></div><div class="metric"><div class="metric-label">Lease file</div><div class="metric-value">{{ 'Available' if leases_log else 'Empty' }}</div><div class="metric-note">{{ leases_path }}</div></div></div>
+      <div class="panel"><div class="panel-head"><div><h2>Config fetches</h2><p>The key ZTP signal: which client downloaded which file.</p></div><span class="badge-state {{ 'ok' if fetches else 'warn' }}">{{ fetches|length }} event(s)</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>Client IP</th><th>Device</th><th>Config file</th><th>Status</th></tr></thead><tbody>{% for f in fetches %}<tr><td class="mono">{{ f.time }}</td><td class="mono">{{ f.client }}</td><td class="mono">{{ f.device or '—' }}</td><td class="mono">{{ f.file }}</td><td>{% if f.status == '200' %}<span class="badge-state ok">200 OK</span>{% else %}<span class="badge-state bad">{{ f.status }}</span>{% endif %}</td></tr>{% else %}<tr><td colspan="5" class="empty">No fetches yet. Check DHCP and lease events first.</td></tr>{% endfor %}</tbody></table></div></div>
+      <div class="panel"><div class="panel-head"><div><h2>Raw logs</h2><p>Use these only when the primary fetch table does not explain the failure.</p></div></div><details class="hidden-details"><summary>DHCP log · {{ syslog_path }} · Export</summary><a href="/logs/export/dhcp" class="btn btn-sm btn-outline-secondary mt-2">Export DHCP log</a><pre class="log">{{ dhcp_log or '(empty / not readable)' }}</pre></details><details class="hidden-details"><summary>DHCP leases · {{ leases_path }} · Export</summary><a href="/logs/export/leases" class="btn btn-sm btn-outline-secondary mt-2">Export leases</a><pre class="log">{{ leases_log or '(empty / not readable)' }}</pre></details></div>
+      <details class="panel hidden-details"><summary>Troubleshooting flow</summary><div class="small mt-3">1. Device sends DHCP Discover → 2. DHCP server creates a lease → 3. Device fetches the config over HTTP → 4. Device commits the config. A missing event identifies where ZTP stopped.</div></details>
+      <footer>ztp-app {{ version }} · UI v2 · Built by {{ author }}</footer>
     </div>
-    <div class="table-responsive">
-      <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>Time</th><th>Client IP</th><th>Serial / Device</th><th>Config file</th><th>Status</th></tr></thead>
-        <tbody>
-          {% for f in fetches %}
-          <tr><td class="mono">{{ f.time }}</td><td class="mono">{{ f.client }}</td>
-              <td class="mono">{{ f.device or '—' }}</td>
-              <td class="mono">{{ f.file }}</td>
-              <td><span class="badge {{ 'bg-success' if f.status=='200' else 'bg-danger' }}">{{ f.status }}</span></td></tr>
-          {% else %}<tr><td colspan="5" class="text-white-50">No fetches yet (nginx log empty or not readable). A 200 here = device pulled its config.</td></tr>{% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="row g-4">
-    <div class="col-lg-6">
-      <div class="glass p-4 h-100">
-        <div class="card-h mb-2 d-flex justify-content-between">
-          <span>DHCP log — dhcpd ({{ syslog_path }})</span>
-          <a href="/logs/export/dhcp" class="text-lowercase">export</a>
-        </div>
-        <pre class="log mb-0">{{ dhcp_log or '(empty / not readable — needs access to ' ~ syslog_path ~ ')' }}</pre>
-      </div>
-    </div>
-    <div class="col-lg-6">
-      <div class="glass p-4 h-100">
-        <div class="card-h mb-2 d-flex justify-content-between">
-          <span>DHCP leases ({{ leases_path }})</span>
-          <a href="/logs/export/leases" class="text-lowercase">export</a>
-        </div>
-        <pre class="log mb-0">{{ leases_log or '(empty / not readable)' }}</pre>
-      </div>
-    </div>
-  </div>
-
-  <p class="text-white-50 small mt-3">Troubleshooting flow: device sends DHCP DISCOVER (DHCP log) →
-     gets a lease (leases) → fetches its config over HTTP (Config fetches, status 200) → commits.
-     A missing fetch or a non-200 status pinpoints where ZTP stalled.</p>
-
-  <footer class="text-center mt-4">Built by {{ author }} &middot; v{{ version }}</footer>
+  </main>
 </div>
 </body>
 </html>
