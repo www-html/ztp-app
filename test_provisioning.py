@@ -42,6 +42,7 @@ class ProvisioningSafetyTests(unittest.TestCase):
             rows.append({"filename": name, "hostname": "", "supported_models": [],
                          "compatibility_group": "", "pool_name": "default", "checksum": app.config_sha256(path),
                          "allocation_order": order, "status": "AVAILABLE", "assigned_device": "",
+                         "auto_pool_enabled": True, "allow_any_model": True,
                          "created_at": "now", "updated_at": "now"})
         app.write_config_pool(rows)
 
@@ -96,6 +97,7 @@ class ProvisioningSafetyTests(unittest.TestCase):
         self.add_configs(["static.conf", "auto.conf"])
         pool = app.read_config_pool()
         pool[0]["supported_models"] = ["EX4100-24T"]
+        pool[0]["allow_any_model"] = False
         pool[1]["supported_models"] = []
         app.write_config_pool(pool)
         app.LEASES_FILE.write_text("lease 192.168.250.10 { hardware ethernet aa:bb:cc:dd:ee:02; binding state active; }", encoding="utf-8")

@@ -17,7 +17,7 @@
     <div class="side-label">Workspace</div>
     <nav class="side-nav">
       <a class="side-link" href="/"><span class="side-icon">◼</span>Overview</a>
-      {% if mode == 'FULL_ZTP' %}<a class="side-link" href="/#network-view"><span class="side-icon">⌁</span>Network</a>{% endif %}
+      {% if mode != 'FILE_SERVER_ONLY' %}<a class="side-link" href="/#network-view"><span class="side-icon">⌁</span>Network</a>{% endif %}
       <a class="side-link" href="/#devices-view"><span class="side-icon">◇</span>Devices</a>
       <a class="side-link" href="/#configs-view"><span class="side-icon">□</span>Configs</a>
       <a class="side-link" href="/#validation-view"><span class="side-icon">✓</span>Validation</a>
