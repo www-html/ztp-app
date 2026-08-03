@@ -167,6 +167,11 @@ class StabilizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(app.read_settings()["gateway"], "")
 
+    def test_legacy_nginx_dash_bytes_are_safe(self):
+        parsed = app._parse_nginx_line('192.168.250.20 [02/Aug/2026:12:00:00 +0000] "GET /configs/edge.conf HTTP/1.1" 304 0 0.01 "req-304" "edge.conf" "" "AUTO" "-" "test"')
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["expected_bytes"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

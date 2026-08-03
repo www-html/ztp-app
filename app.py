@@ -3175,7 +3175,8 @@ def _parse_nginx_line(line: str) -> dict | None:
         data["uri"] = parts[1] if len(parts) > 1 else ""
         data["bytes_sent"] = int(data.pop("bytes"))
         data["status"] = int(data["status"])
-        data["expected_bytes"] = int(data.get("expected_bytes") or 0)
+        expected_text = str(data.get("expected_bytes") or "").strip()
+        data["expected_bytes"] = int(expected_text) if expected_text.isdigit() else 0
         return data
     legacy = re.search(r'(\d+\.\d+\.\d+\.\d+).*?\[([^\]]+)\].*?"(?:GET|HEAD)\s+([^\s"]+).*?"\s+(\d{3})(?:\s+(\d+)\s+(\S+))?', line)
     if not legacy:
