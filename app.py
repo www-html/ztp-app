@@ -2484,7 +2484,7 @@ def index(view=None):
     network_errors = _network_errors(settings) if is_dhcp_mode(settings) else []
     network_warnings = _network_warnings(settings) if is_dhcp_mode(settings) else []
     return render_template("index.html",
-        configs=list_configs(), pool=pool, config_checks=all_config_status(),
+        view=view, configs=list_configs(), pool=pool, config_checks=all_config_status(),
         devices=devices, profiles=profiles, mapping_issues=mapping_issues(devices, profiles), settings=settings,
         interfaces=network_interfaces() if is_dhcp_mode(settings) else [], network_checks=network_messages,
         network_errors=network_errors, network_warnings=network_warnings,

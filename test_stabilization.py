@@ -118,6 +118,7 @@ class StabilizationTests(unittest.TestCase):
         html = app.app.test_client().get("/?view=overview").get_data(as_text=True)
         for label in ("Overview", "Config Files", "Logs", "Settings"):
             self.assertIn(label, html)
+        self.assertIn("DHCP_FILE_SERVER" if app.operating_mode() == "DHCP_FILE_SERVER" else "Provisioning clients", html)
         self.assertNotIn("Health", html)
         self.assertNotIn("SSH credentials", html)
 
