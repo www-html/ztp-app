@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - production target is Linux/WSL
     fcntl = None
 
 from flask import (Flask, Response, flash, jsonify, redirect, render_template,
-                   request, send_from_directory, url_for)
+                   request, send_from_directory, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # ---------------------------------------------------------------- paths -----
@@ -166,7 +166,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.09"   # workspace stabilization, protected state and unified overview
+VERSION = "26.08.10"   # browser-compatible session login
 
 
 class JsonDataError(RuntimeError):
@@ -218,6 +218,10 @@ def _load_secret_key() -> str:
 
 app = Flask(__name__)
 app.secret_key = _load_secret_key()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
 
 for d in (NGINX_DIR, UPLOAD_DIR):
     try:
@@ -267,15 +271,55 @@ if not DEV_MODE:
 
 @app.before_request
 def _require_auth():
-    """GUI is protected by HTTP Basic Auth in production. /configs/* stays open —
-    Junos devices fetch their config there during ZTP and can't present credentials.
-    Auth is skipped entirely under ZTP_DEV=1 (local dev / _smoketest.py)."""
-    if DEV_MODE or request.path.startswith("/configs/") or request.path == "/ztp/config":
+    """Protect the GUI with a browser session while retaining Basic Auth for API clients.
+
+    /configs/* and /ztp/config remain public because Junos devices cannot authenticate
+    while bootstrapping. Auth is skipped under ZTP_DEV=1 for local tests.
+    """
+    if (DEV_MODE or request.path.startswith("/configs/") or
+            request.path in {"/ztp/config", "/login"}):
+        return None
+    if session.get("admin_user"):
         return None
     auth = request.authorization
-    if not auth or not _check_admin(auth.username, auth.password):
-        return Response("Authentication required.", 401,
-                        {"WWW-Authenticate": 'Basic realm="ZTP Manager"'})
+    if auth and _check_admin(auth.username, auth.password):
+        return None
+    if request.method == "GET" and not request.path.startswith("/api/"):
+        next_url = request.full_path.rstrip("?")
+        return redirect(url_for("login", next=next_url))
+    return Response("Authentication required.", 401,
+                    {"WWW-Authenticate": 'Basic realm="ZTP Manager"'})
+
+
+def _safe_next_url(value: str) -> str:
+    """Accept only local absolute paths to avoid an open redirect after login."""
+    value = (value or "").strip()
+    if value.startswith("/") and not value.startswith("//"):
+        return value
+    return url_for("index", view="overview")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if DEV_MODE:
+        return redirect(url_for("index", view="overview"))
+    next_url = _safe_next_url(request.values.get("next", ""))
+    if request.method == "POST":
+        user = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        if _check_admin(user, password):
+            session.clear()
+            session["admin_user"] = user
+            return redirect(next_url)
+        return render_template("login.html", error="Invalid username or password.",
+                               next_url=next_url, version=VERSION), 401
+    return render_template("login.html", error="", next_url=next_url, version=VERSION)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.errorhandler(JsonDataError)
@@ -2602,8 +2646,8 @@ def change_admin_password():
     if len(new_pw) < 4:
         flash("New password must be at least 4 characters.", "danger"); return redirect(url_for("index"))
     _save_admin(new_user, new_pw)
-    flash(f"Admin login updated (username: {new_user}). Your browser may still show the old "
-          "prompt cached — re-enter the new credentials when asked.", "success")
+    session["admin_user"] = new_user
+    flash(f"Admin login updated (username: {new_user}).", "success")
     return redirect(url_for("index"))
 
 
