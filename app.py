@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v4]
+ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.08.07]
 Author: binh.trinh
 
 Matching (method-driven, not model-hardcoded):
@@ -9,7 +9,7 @@ Matching (method-driven, not model-hardcoded):
   - Generic Profile       -> elsif option vendor-class-identifier ~= "<vendor-class>"
 File-server advertised via Option 66 (tftp-server-name).
 
-v4: editable DHCP pool (settings.json), SSH credential store (creds.json, default +
+v26.08.07: editable DHCP pool (settings.json), SSH credential store (creds.json, default +
 per-device), config auto-checks (override-aware), bindings + ping/SSH health to a
 post-ZTP management IP (any subnet), production WSGI (waitress).
 

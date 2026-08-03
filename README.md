@@ -1,4 +1,4 @@
-# ztp-app v4 — vendor-neutral Juniper ZTP over HTTP
+# ztp-app v26.08.07 — vendor-neutral Juniper ZTP over HTTP
 
 GUI (Flask) to drive ZTP on an isolated **L2** segment: upload full configs to Nginx,
 map devices → config, generate/validate `dhcpd.conf`, reserve Auto Pool files safely,
