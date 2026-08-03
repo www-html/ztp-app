@@ -20,4 +20,4 @@ jobs:
       - name: Unit and acceptance tests
         env:
           ZTP_DEV: '1'
-        run: python -m unittest -v test_provisioning.py test_three_modes.py
+        run: python -m unittest -v

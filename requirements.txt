@@ -1,5 +1,4 @@
 flask>=3.0
 werkzeug>=3.0      # explicit: password hashing for admin auth (was only a transitive flask dep)
 waitress>=3.0      # production WSGI server (no dev-server warning)
-paramiko>=3.4      # SSH hostname verification in Bindings & Health
 openpyxl>=3.1      # XLSX mapping/history exports

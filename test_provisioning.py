@@ -133,7 +133,7 @@ class ProvisioningSafetyTests(unittest.TestCase):
         ok, message = app.deploy_dhcpd("ignored", settings=app.read_settings(), devices=[], profiles=[])
         self.assertTrue(ok); self.assertIn("FILE_SERVER_ONLY", message)
 
-    def test_runtime_thresholds_manual_verification_history_and_exports(self):
+    def test_runtime_thresholds_and_delivery_workflow_has_no_manual_verify(self):
         self.add_configs(["auto.conf"])
         app.write_assignments({"mac:aa": {"device_key": "mac:aa", "assignment_type": "AUTO",
                                            "filename": "auto.conf", "status": "RESERVED", "state": "ASSIGNED",
@@ -144,11 +144,9 @@ class ProvisioningSafetyTests(unittest.TestCase):
         app.append_history("TEST_EVENT", "mac:aa", message="audit")
         self.assertEqual(app.export_history_rows()[0]["event_type"], "TEST_EVENT")
         client = app.app.test_client()
-        response = client.post("/provisioning/verify/mac:aa", data={"result": "COMPLETED",
-            "serial": "S1", "model": "EX4100-24T", "hostname": "edge", "remarks": "commit ok"})
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(app.read_results()["mac:aa"]["result"], "COMPLETED")
-        self.assertEqual(app.read_assignments()["mac:aa"]["state"], "COMPLETED")
+        response = client.post("/provisioning/verify/mac:aa", data={"result": "COMPLETED"})
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("COMPLETED", app.read_assignments()["mac:aa"].get("state", ""))
 
     def test_json_backup_is_created_before_replacement(self):
         app.write_settings({"global_mode": "FULL_ZTP", "server_ip": "192.168.250.1"})

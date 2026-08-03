@@ -78,9 +78,9 @@ if [ "$ZTP_MODE" != "FILE_SERVER_ONLY" ] && [ "${APPLY_DHCP_ON_INSTALL:-0}" = "1
 fi
 
 IP="$(hostname -I | awk '{print $1}')"
-echo "Done. Open the UI at http://$IP:8080  (Dashboard -> set DHCP pool + credentials)."
+echo "Done. Open the UI at http://$IP:8080  (Settings -> choose mode, interfaces and DHCP pool)."
 echo "Make sure $BRIDGE_IF is bridged into the same L2 domain as the devices."
 echo
 echo "Admin login defaults to admin/admin (or ZTP_ADMIN_USER/ZTP_ADMIN_PASSWORD if set"
-echo "in ztp-app.service before first start). CHANGE IT NOW at Dashboard -> Admin Login."
+echo "in ztp-app.service before first start). Change it before production use."
 echo "(admin_auth.json is chmod 600 under /opt/ztp-app; delete it to reset to defaults.)"
