@@ -34,12 +34,26 @@ subnet {{ subnet }} netmask {{ netmask }} {
     }
 {% set ns.first = false %}
 {% endfor %}
-{% for p in profiles %}
-    {% if ns.first %}if{% else %}elsif{% endif %} option vendor-class-identifier ~= "{{ p.match_expression }}" {
+{% for d in serial_auto_devices %}
+    {% if ns.first %}if{% else %}elsif{% endif %} option vendor-class-identifier ~= "{{ d.serial_number }}$" {
         option NEW_OP.transfer-mode "http";
-        option NEW_OP.config-file-name "configs/{{ p.config_file }}";
+        option NEW_OP.config-file-name "ztp/config";
     }
 {% set ns.first = false %}
+{% endfor %}
+{% for p in profiles %}
+{% if p.assignment_type != "DHCP_ONLY" %}
+    {% if ns.first %}if{% else %}elsif{% endif %} option vendor-class-identifier ~= "{{ p.match_expression }}" {
+{% if p.assignment_type == "AUTO" %}
+        option NEW_OP.transfer-mode "http";
+        option NEW_OP.config-file-name "ztp/config";
+{% else %}
+        option NEW_OP.transfer-mode "http";
+        option NEW_OP.config-file-name "configs/{{ p.config_file }}";
+{% endif %}
+    }
+{% set ns.first = false %}
+{% endif %}
 {% endfor %}
 
     # =================================================================
@@ -51,6 +65,14 @@ subnet {{ subnet }} netmask {{ netmask }} {
         fixed-address {{ d.ip_address }};
         option NEW_OP.transfer-mode "http";
         option NEW_OP.config-file-name "configs/{{ d.specific_config_file }}";
+    }
+{% endfor %}
+{% for d in mac_auto_devices %}
+    host {{ d.hostname }} {
+        hardware ethernet {{ d.mac_address }};
+        fixed-address {{ d.ip_address }};
+        option NEW_OP.transfer-mode "http";
+        option NEW_OP.config-file-name "ztp/config";
     }
 {% endfor %}
 }
