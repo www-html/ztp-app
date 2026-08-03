@@ -8,7 +8,8 @@ Type=simple
 # Runs as root so it can write runtime files and, in FULL_ZTP, manage ISC DHCP.
 WorkingDirectory=/opt/ztp-app
 Environment=ZTP_WEBROOT=/var/www/html/configs
-Environment=ZTP_MODE=FULL_ZTP
+Environment=ZTP_MODE=ZTP_PROVISIONING
+Environment=ZTP_DATA_DIR=/var/lib/ztp-app
 Environment=ZTP_DHCPD=/etc/dhcp/dhcpd.conf
 Environment=ZTP_LEASES=/var/lib/dhcp/dhcpd.leases
 Environment=ZTP_NGINX_ACCESS=/var/log/nginx/ztp-access.log

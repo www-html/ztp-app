@@ -131,17 +131,12 @@
     <div class="side-label">Workspace</div>
     <nav class="side-nav">
       <button type="button" class="side-link active" data-view="overview-view"><span class="side-icon">◼</span>Overview</button>
-      {% if mode == 'FULL_ZTP' %}<button type="button" class="side-link" data-view="network-view"><span class="side-icon">⌁</span>Network</button>{% endif %}
-      <button type="button" class="side-link" data-view="devices-view"><span class="side-icon">◇</span>Devices</button>
-      <button type="button" class="side-link" data-view="configs-view"><span class="side-icon">□</span>Configs</button>
-      <button type="button" class="side-link" data-view="validation-view"><span class="side-icon">✓</span>Validation</button>
+      <button type="button" class="side-link" data-view="configs-view"><span class="side-icon">□</span>Config files</button>
     </nav>
     <div class="side-label">Operations</div>
     <nav class="side-nav">
-      <a class="side-link" href="/provisioning"><span class="side-icon">▣</span>Provisioning</a>
-      <a class="side-link" href="/bindings"><span class="side-icon">↔</span>Health</a>
       <a class="side-link" href="/logs"><span class="side-icon">≡</span>Logs</a>
-      <button type="button" class="side-link" data-view="admin-view"><span class="side-icon">⚙</span>Administration</button>
+      <button type="button" class="side-link" data-view="admin-view"><span class="side-icon">⚙</span>Settings</button>
     </nav>
     <div class="side-footer">UI v2 · {{ version }}<br>Option 66: <code>{{ settings.server_ip }}</code></div>
   </aside>
@@ -149,7 +144,7 @@
   <main class="main">
     <header class="topbar">
       <div class="topbar-title">ZTP deployment workspace{% if dev_mode %} <span class="badge text-bg-warning">DEV</span>{% endif %}</div>
-      <div class="topbar-meta"><span>{{ mode }}</span><a class="btn btn-sm btn-outline-secondary" href="/provisioning">Provisioning</a><span class="option66">Option 66 <code>{{ settings.server_ip }}</code></span><a class="btn btn-sm btn-outline-secondary" href="/preview" target="_blank">Preview DHCP</a></div>
+      <div class="topbar-meta"><span>{{ mode }}</span><a class="btn btn-sm btn-outline-secondary" href="/provisioning">Operations</a><span class="option66">Server <code>{{ settings.server_ip }}</code></span><a class="btn btn-sm btn-outline-secondary" href="/preview" target="_blank">Preview DHCP</a></div>
     </header>
 
     <div class="content">
@@ -161,7 +156,7 @@
       {% set ztp_ready = not readiness_bad %}
 
       <section id="overview-view" class="view">
-        <div class="page-head"><div><p class="eyebrow">Operations console</p><h1>Overview</h1><p>Check readiness, review inputs, then apply DHCP.</p></div>{% if mode == 'FULL_ZTP' %}<button type="button" class="btn btn-primary" data-view="network-view">Configure network</button>{% else %}<a class="btn btn-primary" href="/provisioning">Open Provisioning</a>{% endif %}</div>
+        <div class="page-head"><div><p class="eyebrow">Operations console</p><h1>Overview</h1><p>Review readiness, then apply the selected operating mode.</p></div>{% if mode != 'FILE_SERVER_ONLY' %}<button type="button" class="btn btn-primary" data-view="network-view">Configure network</button>{% else %}<a class="btn btn-primary" href="#configs-view">Open config files</a>{% endif %}</div>
         {% if mode == 'FILE_SERVER_ONLY' %}<div class="alert alert-warning">FILE_SERVER_ONLY is active. DHCP, lease allocation, ping and SSH checks are disabled; use Provisioning and Logs for file delivery and manual verification.</div>{% endif %}
         <div class="status-banner {{ 'danger' if readiness_bad else 'warning' if not settings.ztp_interface else '' }}">
           <div><div class="status-title">System readiness</div><div class="status-line">Internet <code>{{ settings.internet_interface or 'not selected' }}</code> · ZTP <code>{{ settings.ztp_interface or 'not selected' }}</code> · Server <code>{{ settings.server_ip }}</code></div></div>
@@ -183,7 +178,7 @@
         </div>
         <div class="panel"><div class="panel-head"><div><h2>Quick Start</h2><p>Each card shows where to work, what to do, and what success looks like.</p></div></div>
           <div class="quick-start-grid">
-            {% if mode == 'FULL_ZTP' %}
+            {% if mode == 'ZTP_PROVISIONING' %}
             <button type="button" class="quick-step" data-view="network-view"><span class="quick-step-number">1</span><span class="quick-step-body"><span class="quick-step-title">Prepare the network</span><span class="quick-step-location">Network</span><span class="quick-step-result">Click Refresh interfaces. Connect the cable and assign IPv4 to the ZTP interface.</span></span></button>
             <button type="button" class="quick-step" data-view="network-view"><span class="quick-step-number">2</span><span class="quick-step-body"><span class="quick-step-title">Build the DHCP pool</span><span class="quick-step-location">Network</span><span class="quick-step-result">Select interfaces, click Suggest pool, review the values, confirm, and save.</span></span></button>
             {% endif %}
@@ -248,10 +243,10 @@
               <div class="col-md-4"><label class="form-label">Compatibility group <span class="field-tag optional">Optional</span></label><input name="compatibility_group" class="form-control" placeholder="EX4100"></div>
             </div></div>
             <div class="form-group-block"><div class="form-group-title">3 · Provisioning</div><div class="row g-3 align-items-end">
-              <div class="col-md-4"><label class="form-label">Assignment type <span class="field-tag required">Required</span></label><select name="assignment_type" class="form-select"><option value="STATIC">STATIC — dedicated file</option><option value="AUTO">AUTO — resolver pool</option><option value="DHCP_ONLY">DHCP_ONLY — IP only</option></select></div>
-              <div class="col-md-4"><label class="form-label">Specific config file <span class="field-tag conditional">Required for STATIC</span></label><select name="specific_config_file" class="form-select"><option value="">None — use DHCP_ONLY</option>{% for c in configs %}<option>{{ c }}</option>{% endfor %}</select></div>
+              <div class="col-md-4"><label class="form-label">Assignment method <span class="field-tag required">Required</span></label><select name="assignment_type" class="form-select"><option value="STATIC">STATIC — dedicated file</option><option value="AUTO">AUTO — resolver pool</option></select></div>
+              <div class="col-md-4"><label class="form-label">Specific config file <span class="field-tag conditional">Required for STATIC</span></label><select name="specific_config_file" class="form-select"><option value="">Select only for STATIC</option>{% for c in configs %}<option>{{ c }}</option>{% endfor %}</select></div>
               <div class="col-md-4"><label class="form-label">Auto Pool name <span class="field-tag optional">Optional</span></label><input name="pool_name" class="form-control" placeholder="default"></div>
-              <div class="col-md-4"><button class="btn btn-primary w-100">Save &amp; Deploy</button><div class="form-text mt-1">STATIC = exact dedicated file; AUTO = resolver pool; DHCP_ONLY = IP only.</div></div>
+              <div class="col-md-4"><button class="btn btn-primary w-100">Save &amp; Deploy</button><div class="form-text mt-1">STATIC is exact; AUTO selects only files enabled in Auto Pool.</div></div>
             </div></div>
             <details class="hidden-details"><summary>Advanced: SSH override <span class="field-tag optional">Optional</span></summary><div class="row g-3 mt-1"><div class="col-md-4"><label class="form-label">SSH user <span class="field-tag optional">Optional</span></label><input name="ssh_user" class="form-control" placeholder="root" autocomplete="off"></div><div class="col-md-4"><label class="form-label">SSH password <span class="field-tag optional">Optional</span></label><input name="ssh_pass" type="password" class="form-control" autocomplete="new-password"></div><div class="col-md-4"><div class="form-text mt-4">Leave blank to use the Default credential.</div></div></div></details>
           </form>
