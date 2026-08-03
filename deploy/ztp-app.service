@@ -5,11 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Runs as root so it can write /etc/dhcp/dhcpd.conf and restart isc-dhcp-server/nginx.
+# Runs as root so it can write runtime files and, in FULL_ZTP, manage ISC DHCP.
 WorkingDirectory=/opt/ztp-app
 Environment=ZTP_WEBROOT=/var/www/html/configs
+Environment=ZTP_MODE=FULL_ZTP
 Environment=ZTP_DHCPD=/etc/dhcp/dhcpd.conf
 Environment=ZTP_LEASES=/var/lib/dhcp/dhcpd.leases
+Environment=ZTP_NGINX_ACCESS=/var/log/nginx/ztp-access.log
 Environment=ZTP_HOST=0.0.0.0
 Environment=ZTP_PORT=8080
 # Default admin login is admin/admin on first start — change it from the UI

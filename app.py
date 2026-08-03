@@ -20,6 +20,7 @@ Run:
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import ipaddress
 import json
@@ -30,10 +31,16 @@ import shutil
 import socket
 import tempfile
 import subprocess
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production target is Linux/WSL
+    fcntl = None
 
 from flask import (Flask, Response, flash, jsonify, redirect, render_template,
                    request, send_from_directory, url_for)
@@ -44,9 +51,16 @@ APP_DIR      = Path(__file__).resolve().parent
 NGINX_DIR    = Path(os.environ.get("ZTP_WEBROOT", "/var/www/html/configs"))
 UPLOAD_DIR   = Path(os.environ.get("ZTP_UPLOADS", str(APP_DIR / "uploads")))
 DEVICES_JSON = Path(os.environ.get("ZTP_DEVICES", str(APP_DIR / "devices.json")))
+STATIC_MAPPINGS_JSON = Path(os.environ.get("ZTP_STATIC_MAPPINGS", str(APP_DIR / "static_mappings.json")))
 PROFILES_JSON= Path(os.environ.get("ZTP_PROFILES", str(APP_DIR / "generic_profiles.json")))
 SETTINGS_JSON= Path(os.environ.get("ZTP_SETTINGS", str(APP_DIR / "settings.json")))
 CREDS_JSON   = Path(os.environ.get("ZTP_CREDS", str(APP_DIR / "creds.json")))
+CONFIG_POOL_JSON = Path(os.environ.get("ZTP_CONFIG_POOL", str(APP_DIR / "config_pool.json")))
+ASSIGNMENTS_JSON = Path(os.environ.get("ZTP_ASSIGNMENTS", str(APP_DIR / "assignments.json")))
+RESULTS_JSON = Path(os.environ.get("ZTP_RESULTS", str(APP_DIR / "results.json")))
+HISTORY_JSONL = Path(os.environ.get("ZTP_HISTORY", str(APP_DIR / "history.jsonl")))
+ALLOCATION_LOCK = Path(os.environ.get("ZTP_ALLOCATION_LOCK", str(APP_DIR / ".allocation.lock")))
+HISTORY_LOCK = Path(os.environ.get("ZTP_HISTORY_LOCK", str(APP_DIR / ".history.lock")))
 ADMIN_AUTH_JSON = Path(os.environ.get("ZTP_ADMIN_FILE", str(APP_DIR / "admin_auth.json")))
 SECRET_FILE  = Path(os.environ.get("ZTP_SECRET_FILE", str(APP_DIR / ".secret_key")))
 DHCPD_CONF   = Path(os.environ.get("ZTP_DHCPD", "/etc/dhcp/dhcpd.conf"))
@@ -59,6 +73,7 @@ SSH_PORT     = int(os.environ.get("ZTP_SSH_PORT", "22"))
 
 # Default DHCP pool — RFC1918 192.168.250.0/24. Editable in the UI.
 DEFAULT_SETTINGS = {
+    "global_mode": os.environ.get("ZTP_MODE", "FULL_ZTP"),
     "server_ip": os.environ.get("ZTP_VM_IP", "192.168.250.1"),
     "subnet":    os.environ.get("ZTP_SUBNET", "192.168.250.0"),
     "netmask":   os.environ.get("ZTP_NETMASK", "255.255.255.0"),
@@ -66,24 +81,39 @@ DEFAULT_SETTINGS = {
     "range_high":os.environ.get("ZTP_RANGE_HIGH", "192.168.250.254"),
     "internet_interface": os.environ.get("ZTP_INTERNET_INTERFACE", ""),
     "ztp_interface":      os.environ.get("ZTP_INTERFACE", ""),
+    "assigned_no_fetch_minutes": os.environ.get("ZTP_ASSIGNED_NO_FETCH_MINUTES", "5"),
+    "repeated_fetch_limit": os.environ.get("ZTP_REPEATED_FETCH_LIMIT", "5"),
+    "repeated_fetch_window_minutes": os.environ.get("ZTP_REPEATED_FETCH_WINDOW_MINUTES", "10"),
+    "dhcp_retry_limit": os.environ.get("ZTP_DHCP_RETRY_LIMIT", "10"),
+    "dhcp_retry_window_minutes": os.environ.get("ZTP_DHCP_RETRY_WINDOW_MINUTES", "5"),
 }
 
 ALLOWED_EXT   = {".txt", ".conf"}
 MATCH_METHODS = ["serial", "mac"]
+GLOBAL_MODES = ["FULL_ZTP", "FILE_SERVER_ONLY"]
+ASSIGNMENT_TYPES = ["STATIC", "AUTO", "DHCP_ONLY"]
+CONFIG_STATUSES = ["AVAILABLE", "RESERVED", "FETCHED", "PENDING_CHECK", "COMPLETED", "FAILED", "MISSING"]
+PROVISION_STATES = ["DHCP_SEEN", "DHCP_ONLY", "ASSIGNED", "ASSIGNED_NO_FETCH", "FETCHING",
+                    "FETCHED", "FETCH_FAILED", "REPEATED_FETCH", "DHCP_RETRY_LOOP",
+                    "PENDING_CHECK", "COMPLETED", "FAILED", "REVIEW_REQUIRED"]
 URL_MAX       = 256
 SERIAL_RE       = re.compile(r"^[A-Za-z0-9]+$")
 VENDOR_CLASS_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 MAC_RE          = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 PROFILE_REGEX_TEXT_RE = re.compile(r'^[^\r\n"]{1,160}$')
 DEVICE_FIELDS = ["match_method", "serial_number", "mac_address", "device_type",
-                 "hostname", "ip_address", "mgmt_ip", "specific_config_file",
-                 "option60_confirmed"]
+                 "hostname", "ip_address", "mgmt_ip", "client_id", "compatibility_group",
+                 "specific_config_file", "assignment_type", "pool_name", "option60_confirmed"]
 PROFILE_MATCH_MODES = ["contains", "regex"]
-PROFILE_FIELDS = ["label", "vendor_class", "match_mode", "config_file", "option60_confirmed"]
+PROFILE_FIELDS = ["label", "vendor_class", "match_mode", "config_file", "assignment_type",
+                  "pool_name", "compatibility_group", "option60_confirmed"]
 SETTINGS_FIELDS = ["server_ip", "subnet", "netmask", "range_low", "range_high",
-                   "internet_interface", "ztp_interface"]
+                   "internet_interface", "ztp_interface", "global_mode",
+                   "assigned_no_fetch_minutes", "repeated_fetch_limit",
+                   "repeated_fetch_window_minutes", "dhcp_retry_limit",
+                   "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.06"   # build version yy.mm.dd; safety hardening release
+VERSION = "26.08.07"   # provisioning modes, Auto Pool and manual verification release
 
 
 class JsonDataError(RuntimeError):
@@ -187,7 +217,7 @@ def _require_auth():
     """GUI is protected by HTTP Basic Auth in production. /configs/* stays open —
     Junos devices fetch their config there during ZTP and can't present credentials.
     Auth is skipped entirely under ZTP_DEV=1 (local dev / _smoketest.py)."""
-    if DEV_MODE or request.path.startswith("/configs/"):
+    if DEV_MODE or request.path.startswith("/configs/") or request.path == "/ztp/config":
         return None
     auth = request.authorization
     if not auth or not _check_admin(auth.username, auth.password):
@@ -221,18 +251,32 @@ def _validate_string_records(path: Path, rows, kind: str) -> None:
 
 
 def read_devices():
-    rows = _read_json(DEVICES_JSON, [])
-    _validate_string_records(DEVICES_JSON, rows, "device")
+    source = STATIC_MAPPINGS_JSON if STATIC_MAPPINGS_JSON.exists() else DEVICES_JSON
+    rows = _read_json(source, [])
+    _validate_string_records(source, rows, "device")
     for row in rows:
         row.setdefault("option60_confirmed", "")
+        row.setdefault("client_id", "")
+        row.setdefault("compatibility_group", "")
+        # Legacy rows without a dedicated file are DHCP_ONLY (they may still
+        # be tracked in the inventory, but must not accidentally shadow a
+        # Generic Profile as an incomplete STATIC rule).
+        if not row.get("assignment_type"):
+            row["assignment_type"] = "STATIC" if row.get("specific_config_file") else "DHCP_ONLY"
+        row.setdefault("pool_name", "")
+        row.setdefault("compatibility_group", "")
     return rows
-def write_devices(rows): _atomic_write_json(DEVICES_JSON, rows)
+def write_devices(rows):
+    _atomic_write_json(STATIC_MAPPINGS_JSON, rows)
+    _atomic_write_json(DEVICES_JSON, rows)
 def read_profiles():
     rows = _read_json(PROFILES_JSON, [])
     _validate_string_records(PROFILES_JSON, rows, "profile")
     for row in rows:
         row.setdefault("match_mode", "contains")
         row.setdefault("option60_confirmed", "")
+        row.setdefault("assignment_type", "STATIC" if row.get("config_file") else "DHCP_ONLY")
+        row.setdefault("pool_name", "")
     return rows
 def write_profiles(rows): _atomic_write_json(PROFILES_JSON, rows)
 
@@ -277,6 +321,11 @@ def mapping_issues(devices=None, profiles=None) -> list[str]:
     macs = {}
     for row in devices:
         host = row.get("hostname") or "(unnamed device)"
+        kind = assignment_type(row, "STATIC")
+        if kind not in ASSIGNMENT_TYPES:
+            issues.append(f"{host}: unknown assignment type '{row.get('assignment_type')}'.")
+        if kind == "AUTO" and row.get("specific_config_file"):
+            issues.append(f"{host}: AUTO assignment still has a static config file.")
         serial = row.get("serial_number", "")
         mac = row.get("mac_address", "").lower()
         if serial:
@@ -307,6 +356,9 @@ def mapping_issues(devices=None, profiles=None) -> list[str]:
         vendor = profile.get("vendor_class", "")
         mode = profile.get("match_mode", "contains")
         label = profile.get("label") or vendor or "(unnamed profile)"
+        kind = assignment_type(profile, "STATIC")
+        if kind not in ASSIGNMENT_TYPES:
+            issues.append(f"{label}: unknown assignment type '{profile.get('assignment_type')}'.")
         if not _confirmed(profile.get("option60_confirmed")):
             issues.append(f"{label}: Generic Profile is not confirmed against a real DHCP Option 60 capture.")
         if mode not in PROFILE_MATCH_MODES:
@@ -360,8 +412,11 @@ def validate_device_row(row: dict, existing=None, settings=None) -> list[str]:
     errors = []
     method = row.get("match_method", "")
     host = row.get("hostname", "")
+    kind = assignment_type(row, "STATIC")
     if method not in MATCH_METHODS:
         errors.append("Match method must be serial or mac.")
+    if kind not in ASSIGNMENT_TYPES:
+        errors.append("Assignment type must be STATIC, AUTO or DHCP_ONLY.")
     if not host:
         errors.append("Hostname is required.")
     serial = row.get("serial_number", "")
@@ -374,6 +429,14 @@ def validate_device_row(row: dict, existing=None, settings=None) -> list[str]:
         errors.append("MAC must use aa:bb:cc:dd:ee:ff format.")
     if method == "mac" and row.get("specific_config_file") and not row.get("ip_address"):
         errors.append("DHCP IP is required for a By-MAC device with its own config file.")
+    if method == "mac" and kind == "AUTO" and not row.get("ip_address"):
+        errors.append("DHCP IP is required for a By-MAC AUTO device.")
+    if kind == "AUTO" and row.get("specific_config_file"):
+        errors.append("AUTO assignment cannot also specify a static config file.")
+    if kind == "DHCP_ONLY" and row.get("specific_config_file"):
+        errors.append("DHCP_ONLY assignment cannot specify a config file.")
+    if kind == "STATIC" and not row.get("specific_config_file"):
+        errors.append("STATIC assignment requires a specific config file; use DHCP_ONLY for IP-only inventory.")
     for field in ("ip_address", "mgmt_ip"):
         value = row.get(field, "")
         if value and not _valid_ipv4(value):
@@ -397,6 +460,8 @@ def validate_device_row(row: dict, existing=None, settings=None) -> list[str]:
             errors.append(f"DHCP IP '{row['ip_address']}' is already mapped to {other.get('hostname')}.")
         if row.get("mgmt_ip") and row.get("mgmt_ip") == other.get("mgmt_ip"):
             errors.append(f"Management IP '{row['mgmt_ip']}' is already mapped to {other.get('hostname')}.")
+        if row.get("client_id") and row.get("client_id").lower() == other.get("client_id", "").lower():
+            errors.append(f"Client ID '{row['client_id']}' is already mapped to {other.get('hostname')}.")
     return errors
 
 
@@ -406,8 +471,11 @@ def validate_profile_row(profile: dict, existing=None, settings=None) -> list[st
     errors = []
     vendor = profile.get("vendor_class", "")
     mode = profile.get("match_mode", "contains")
-    if not vendor or not profile.get("config_file"):
-        errors.append("Vendor class and config file are required.")
+    kind = assignment_type(profile, "STATIC")
+    if not vendor:
+        errors.append("Vendor class is required.")
+    elif kind not in ASSIGNMENT_TYPES:
+        errors.append("Assignment type must be STATIC, AUTO or DHCP_ONLY.")
     elif mode not in PROFILE_MATCH_MODES:
         errors.append("Match mode must be Contains or Regex.")
     elif mode == "contains" and not VENDOR_CLASS_RE.fullmatch(vendor):
@@ -422,7 +490,11 @@ def validate_profile_row(profile: dict, existing=None, settings=None) -> list[st
                 errors.append(f"Regex is invalid: {exc}.")
     if not _confirmed(profile.get("option60_confirmed")):
         errors.append("Generic Profile requires confirmation from a real DHCP Option 60 capture.")
-    if profile.get("config_file"):
+    if kind == "STATIC" and not profile.get("config_file"):
+        errors.append("STATIC profile requires a config file.")
+    if kind in {"AUTO", "DHCP_ONLY"} and profile.get("config_file"):
+        errors.append(f"{kind} profile cannot specify a static config file.")
+    if profile.get("config_file") and kind == "STATIC":
         errors.extend(config_file_errors(profile["config_file"], settings=settings))
     for other in existing:
         other_vendor = other.get("vendor_class", "")
@@ -442,11 +514,141 @@ def read_settings() -> dict:
     if any(not isinstance(value, str) for value in raw.values()):
         raise JsonDataError(f"Expected all values in {SETTINGS_JSON} to be strings.")
     s.update({k: v for k, v in raw.items() if k in SETTINGS_FIELDS and v})
+    if s.get("global_mode") not in GLOBAL_MODES:
+        s["global_mode"] = "FULL_ZTP"
     return s
 
 
 def write_settings(s: dict):
     _atomic_write_json(SETTINGS_JSON, {k: s.get(k, "") for k in SETTINGS_FIELDS})
+
+
+def is_full_ztp(settings: dict | None = None) -> bool:
+    return (settings or read_settings()).get("global_mode", "FULL_ZTP") == "FULL_ZTP"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _safe_int(settings: dict, key: str, fallback: int) -> int:
+    try:
+        return max(0, int(settings.get(key, fallback)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+@contextmanager
+def _exclusive_lock(path: Path):
+    """Hold an exclusive Linux file lock for allocation/history mutations."""
+    if fcntl is None:
+        raise RuntimeError("Exclusive file locking requires fcntl on Linux/WSL.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield handle
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_object_store(path: Path, default: dict) -> dict:
+    value = _read_json(path, default)
+    if not isinstance(value, dict):
+        raise JsonDataError(f"Expected {path} to contain a JSON object.")
+    return value
+
+
+def _read_list_store(path: Path, default: list) -> list:
+    value = _read_json(path, default)
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise JsonDataError(f"Expected {path} to contain a JSON array of objects.")
+    return value
+
+
+def read_config_pool() -> list[dict]:
+    return _read_list_store(CONFIG_POOL_JSON, [])
+
+
+def write_config_pool(rows: list[dict]) -> None:
+    _atomic_write_json(CONFIG_POOL_JSON, rows)
+
+
+def read_assignments() -> dict:
+    return _read_object_store(ASSIGNMENTS_JSON, {})
+
+
+def write_assignments(data: dict) -> None:
+    _atomic_write_json(ASSIGNMENTS_JSON, data)
+
+
+def read_results() -> dict:
+    return _read_object_store(RESULTS_JSON, {})
+
+
+def write_results(data: dict) -> None:
+    _atomic_write_json(RESULTS_JSON, data)
+
+
+def read_history(limit: int = 1000) -> list[dict]:
+    if not HISTORY_JSONL.exists():
+        return []
+    rows = []
+    try:
+        for line in HISTORY_JSONL.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            if not isinstance(item, dict):
+                raise ValueError("history entry is not an object")
+            rows.append(item)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise JsonDataError(f"Cannot read valid history from {HISTORY_JSONL}: {exc}") from exc
+    return rows[-limit:]
+
+
+def append_history(event_type: str, device_key: str = "", operator: str = "system", **fields) -> dict:
+    record = {"timestamp": _now_iso(), "event_type": event_type,
+              "device_key": device_key, "operator": operator}
+    record.update({key: value for key, value in fields.items() if value is not None})
+    HISTORY_JSONL.parent.mkdir(parents=True, exist_ok=True)
+    with _exclusive_lock(HISTORY_LOCK):
+        with HISTORY_JSONL.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    return record
+
+
+def assignment_type(row: dict, default: str = "STATIC") -> str:
+    value = str(row.get("assignment_type") or "").strip().upper()
+    if value in ASSIGNMENT_TYPES:
+        return value
+    return default
+
+
+def device_key(row: dict | None = None, *, serial: str = "", mac: str = "",
+               client_id: str = "", ip: str = "") -> str:
+    row = row or {}
+    serial = serial or row.get("serial_number", "")
+    mac = mac or row.get("mac_address", "")
+    client_id = client_id or row.get("client_id", "")
+    ip = ip or row.get("ip_address", "")
+    if serial:
+        return f"serial:{str(serial).strip().lower()}"
+    if mac:
+        return f"mac:{str(mac).strip().lower()}"
+    if client_id:
+        return f"client-id:{str(client_id).strip().lower()}"
+    return f"ip:{str(ip).strip()}" if ip else ""
+
+
+def config_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def netmask_prefix_length(netmask: str) -> str:
@@ -726,6 +928,111 @@ def list_configs():
         return []
 
 
+def _metadata_models(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def sync_config_pool() -> list[dict]:
+    """Discover files without deleting metadata or changing assigned state."""
+    now = _now_iso()
+    with _exclusive_lock(ALLOCATION_LOCK):
+        rows = read_config_pool()
+        by_name = {}
+        duplicate_rows = []
+        for row in rows:
+            name = str(row.get("filename", "")).strip()
+            if name and name not in by_name:
+                row["filename"] = name
+                row["supported_models"] = _metadata_models(row.get("supported_models"))
+                row.setdefault("compatibility_group", "")
+                row.setdefault("pool_name", "")
+                row.setdefault("hostname", "")
+                row.setdefault("allocation_order", len(by_name) + 1)
+                row.setdefault("status", "AVAILABLE")
+                by_name[name] = row
+            elif name:
+                duplicate_rows.append(row)
+        changed = False
+        for index, filename in enumerate(list_configs(), start=1):
+            path = NGINX_DIR / filename
+            if filename not in by_name:
+                by_name[filename] = {
+                    "filename": filename, "hostname": "", "supported_models": [],
+                    "compatibility_group": "", "checksum": config_sha256(path),
+                    "allocation_order": index, "status": "AVAILABLE", "assigned_device": "",
+                    "created_at": now, "updated_at": now,
+                }
+                changed = True
+            else:
+                row = by_name[filename]
+                if row.get("status") == "MISSING":
+                    row["status"] = "AVAILABLE" if not row.get("assigned_device") else row.get("status")
+                    changed = True
+        for row in by_name.values():
+            filename = row.get("filename", "")
+            if filename and not (NGINX_DIR / filename).is_file() and row.get("status") != "MISSING":
+                row["status"] = "MISSING"
+                row["updated_at"] = now
+                changed = True
+        result = list(by_name.values()) + duplicate_rows
+        if changed or not CONFIG_POOL_JSON.exists():
+            write_config_pool(result)
+        return result
+
+
+def config_pool_errors(rows: list[dict] | None = None) -> list[str]:
+    rows = sync_config_pool() if rows is None else rows
+    errors = []
+    seen = set()
+    hostnames = set()
+    for row in rows:
+        filename = row.get("filename", "")
+        if not filename:
+            errors.append("Config pool entry is missing filename.")
+            continue
+        if filename in seen:
+            errors.append(f"Config pool filename '{filename}' is duplicated.")
+        seen.add(filename)
+        hostname = row.get("hostname", "").strip()
+        if hostname:
+            if hostname in hostnames:
+                errors.append(f"Config pool hostname '{hostname}' is duplicated.")
+            hostnames.add(hostname)
+        path = NGINX_DIR / filename
+        if not path.is_file():
+            errors.append(f"Config pool file '{filename}' is missing.")
+            continue
+        expected = row.get("checksum", "")
+        if expected:
+            try:
+                actual = config_sha256(path)
+            except OSError as exc:
+                errors.append(f"Config pool file '{filename}' cannot be read: {exc}.")
+            else:
+                if actual != expected:
+                    errors.append(f"Config pool checksum mismatch for '{filename}'.")
+    return list(dict.fromkeys(errors))
+
+
+def config_is_compatible(meta: dict, observed_model: str = "", compatibility_group: str = "") -> bool:
+    supported = _metadata_models(meta.get("supported_models"))
+    declared_group = str(meta.get("compatibility_group", "")).strip()
+    observed_model = str(observed_model or "").strip()
+    compatibility_group = str(compatibility_group or "").strip()
+    if not supported and not declared_group:
+        return True
+    if observed_model and observed_model in supported:
+        return True
+    return bool(compatibility_group and declared_group and compatibility_group == declared_group)
+
+
+def config_file_meta(filename: str, pool: list[dict] | None = None) -> dict | None:
+    pool = sync_config_pool() if pool is None else pool
+    return next((row for row in pool if row.get("filename") == filename), None)
+
+
 def check_config_text(text: str, fname: str = "", settings: dict | None = None) -> list[str]:
     """Override-aware auto-checks. Full load-override configs are fine without a delete stmt."""
     low = text.lower()
@@ -782,25 +1089,34 @@ def config_references(fname: str):
 def split_devices(rows):
     """Only devices WITH a specific config file get a dedicated DHCP entry.
     Devices without one are inventory/health-only and fall through to a Generic Profile."""
-    serial = [r for r in rows if r.get("match_method") == "serial"
-              and r.get("serial_number") and r.get("specific_config_file")]
-    mac    = [r for r in rows if r.get("match_method") == "mac"
-              and r.get("mac_address") and r.get("specific_config_file") and r.get("ip_address")]
-    return serial, mac
+    serial_static = [r for r in rows if r.get("match_method") == "serial"
+                     and r.get("serial_number") and assignment_type(r) == "STATIC"
+                     and r.get("specific_config_file")]
+    serial_auto = [r for r in rows if r.get("match_method") == "serial"
+                   and r.get("serial_number") and assignment_type(r) == "AUTO"]
+    mac_static = [r for r in rows if r.get("match_method") == "mac"
+                  and r.get("mac_address") and assignment_type(r) == "STATIC"
+                  and r.get("specific_config_file") and r.get("ip_address")]
+    mac_auto = [r for r in rows if r.get("match_method") == "mac"
+                and r.get("mac_address") and assignment_type(r) == "AUTO" and r.get("ip_address")]
+    return serial_static, serial_auto, mac_static, mac_auto
 
 
 def generate_dhcpd(settings=None, devices=None, profiles=None) -> str:
     s = read_settings() if settings is None else settings
+    if not is_full_ztp(s):
+        return "# FILE_SERVER_ONLY: ISC DHCP generation is disabled.\n"
     devices = read_devices() if devices is None else devices
     profile_rows = read_profiles() if profiles is None else profiles
-    serial_devices, mac_devices = split_devices(devices)
+    serial_devices, serial_auto, mac_devices, mac_auto = split_devices(devices)
     profiles = []
     for profile in profile_rows:
         item = dict(profile)
         item["match_expression"] = profile_match_expression(item)
         profiles.append(item)
     return render_template("dhcpd.j2",
-        serial_devices=serial_devices, mac_devices=mac_devices, profiles=profiles,
+        serial_devices=serial_devices, serial_auto_devices=serial_auto,
+        mac_devices=mac_devices, mac_auto_devices=mac_auto, profiles=profiles,
         vm_ip=s["server_ip"], subnet=s["subnet"], netmask=s["netmask"],
         router=s["server_ip"], range_low=s["range_low"], range_high=s["range_high"])
 
@@ -810,9 +1126,15 @@ def deployment_validation(settings=None, devices=None, profiles=None) -> list[st
     settings = read_settings() if settings is None else settings
     devices = read_devices() if devices is None else devices
     profiles = read_profiles() if profiles is None else profiles
+    # FILE_SERVER_ONLY must not run any ISC DHCP validation.  The reads above
+    # are intentional: malformed JSON is still surfaced instead of becoming
+    # an empty inventory silently.
+    if not is_full_ztp(settings):
+        return []
     errors = list(validate_dhcp_pool(settings))
     if not DEV_MODE:
         errors.extend(_network_errors(settings))
+    errors.extend(config_pool_errors(sync_config_pool()))
     for row in devices:
         others = [item for item in devices if item is not row]
         errors.extend(validate_device_row(row, others, settings=settings))
@@ -870,6 +1192,8 @@ def deploy_dhcpd(text: str, settings=None, devices=None, profiles=None):
         errors = deployment_validation(settings, devices, profiles)
     except JsonDataError as exc:
         return False, f"JSON error; deploy stopped: {exc}"
+    if not is_full_ztp(settings):
+        return True, "FILE_SERVER_ONLY: DHCP generation, validation and restart skipped."
     if errors:
         return False, "Deployment blocked:\n" + "\n".join(errors)
     if not shutil.which("dhcpd"):
@@ -938,8 +1262,445 @@ def parse_leases() -> dict:
     for ip, body in re.findall(r"lease\s+(\S+)\s*\{(.*?)\}", text, re.DOTALL):
         mac = re.search(r"hardware ethernet\s+([0-9a-f:]+);", body, re.I)
         state = re.search(r"binding state\s+(\w+);", body)
-        out[ip] = {"mac": mac.group(1) if mac else "", "state": state.group(1) if state else ""}
+        uid = re.search(r"\buid\s+([^;]+);", body, re.I)
+        hostname = re.search(r"client-hostname\s+\"([^\"]+)\";", body, re.I)
+        out[ip] = {
+            "mac": mac.group(1).lower() if mac else "",
+            "client_id": uid.group(1).strip().strip('"') if uid else "",
+            "hostname": hostname.group(1) if hostname else "",
+            "state": state.group(1) if state else "",
+        }
     return out
+
+
+def _lease_is_active(lease: dict | None) -> bool:
+    return bool(lease and str(lease.get("state", "")).lower() in {"active", "binding"})
+
+
+def option60_for_client(client_ip: str) -> str:
+    """Best-effort raw vendor-class extraction; never used as a unique identity."""
+    if not SYSLOG_FILE.exists():
+        return ""
+    try:
+        lines = SYSLOG_FILE.read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    value = ""
+    for line in lines[-3000:]:
+        if client_ip and client_ip not in line:
+            continue
+        match = re.search(r"(?:vendor-class-identifier|vendor-class|option\s*60)[^\"']*[\"']([^\"']+)[\"']", line, re.I)
+        if match:
+            value = match.group(1).strip()
+    return value
+
+
+def _row_matches_lease(row: dict, client_ip: str, lease: dict) -> bool:
+    mac = str(lease.get("mac", "")).lower()
+    client_id = str(lease.get("client_id", "")).lower()
+    return bool((mac and row.get("mac_address", "").lower() == mac) or
+                (client_id and row.get("client_id", "").lower() == client_id) or
+                (row.get("ip_address") and row.get("ip_address") == client_ip))
+
+
+def find_request_context(client_ip: str) -> tuple[dict | None, dict | None, dict | None, str]:
+    """Resolve a request only through an active lease and an unambiguous mapping/profile."""
+    leases = parse_leases()
+    lease = leases.get(client_ip)
+    if not _lease_is_active(lease):
+        return None, None, lease, "LEASE_NOT_FOUND"
+    devices = read_devices()
+    matched = [row for row in devices if _row_matches_lease(row, client_ip, lease)]
+    vendor = option60_for_client(client_ip)
+    if not matched and vendor:
+        serial_matches = [row for row in devices if row.get("serial_number") and
+                          vendor.lower().endswith(str(row.get("serial_number")).lower())]
+        matched = serial_matches
+    if len(matched) > 1:
+        return None, None, lease, "AMBIGUOUS_MAPPING"
+    row = matched[0] if matched else None
+    profiles = read_profiles()
+    matched_profiles = []
+    for profile in profiles:
+        expression = profile_match_expression(profile)
+        try:
+            if vendor and re.search(expression, vendor, re.I):
+                matched_profiles.append(profile)
+        except re.error:
+            continue
+    if len(matched_profiles) > 1:
+        return row, None, lease, "AMBIGUOUS_PROFILE"
+    return row, (matched_profiles[0] if matched_profiles else None), lease, "OK"
+
+
+def _assignment_filename_valid(filename: str, pool: list[dict]) -> tuple[bool, str]:
+    meta = config_file_meta(filename, pool)
+    if not meta:
+        return False, "CONFIG_NOT_IN_POOL"
+    path = NGINX_DIR / filename
+    if not path.is_file() or meta.get("status") == "MISSING":
+        return False, "CONFIG_MISSING"
+    expected = meta.get("checksum", "")
+    if expected:
+        try:
+            if config_sha256(path) != expected:
+                return False, "CONFIG_CHECKSUM_MISMATCH"
+        except OSError:
+            return False, "CONFIG_MISSING"
+    return True, ""
+
+
+def _static_assignment_error(row: dict, pool: list[dict]) -> tuple[str, str]:
+    filename = str(row.get("specific_config_file", "")).strip()
+    if not filename:
+        return "", ""
+    errors = config_file_errors(filename, settings=read_settings())
+    if errors:
+        return filename, "STATIC_CONFIG_ERROR"
+    meta = config_file_meta(filename, pool)
+    if not meta:
+        return filename, "STATIC_CONFIG_ERROR"
+    if not config_is_compatible(meta, row.get("device_type", ""), row.get("compatibility_group", "")):
+        return filename, "MODEL_MISMATCH"
+    ok, reason = _assignment_filename_valid(filename, pool)
+    return (filename, "" if ok else reason)
+
+
+def _release_auto_locked(assignments: dict, pool: list[dict], key: str, reason: str) -> None:
+    old = assignments.pop(key, None)
+    if not old:
+        return
+    filename = old.get("filename", "")
+    meta = config_file_meta(filename, pool)
+    if meta:
+        meta["status"] = "AVAILABLE"
+        meta["assigned_device"] = ""
+        meta["updated_at"] = _now_iso()
+    append_history("RELEASE_AUTO", key, reason=reason, filename=filename)
+
+
+def release_conflicting_auto_for_static(row: dict) -> None:
+    """Static Mapping override is applied at save time, not deferred until next DHCP request."""
+    wanted_key = device_key(row)
+    sync_config_pool()
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments(); pool = read_config_pool()
+        keys = [key for key, item in assignments.items()
+                if item.get("assignment_type") == "AUTO" and
+                (key == wanted_key or (row.get("serial_number") and
+                                       item.get("serial") == row.get("serial_number")) or
+                 (row.get("mac_address") and item.get("mac", "").lower() == row.get("mac_address", "").lower()))]
+        for key in keys:
+            _release_auto_locked(assignments, pool, key, "STATIC_MAPPING")
+        if row.get("specific_config_file"):
+            meta = config_file_meta(row["specific_config_file"], pool)
+            if meta:
+                meta.update({"status": "RESERVED", "assigned_device": wanted_key, "updated_at": _now_iso()})
+        if keys:
+            write_config_pool(pool); write_assignments(assignments)
+        elif row.get("specific_config_file"):
+            write_config_pool(pool)
+
+
+def _choose_auto_config(pool: list[dict], row: dict | None, profile: dict | None) -> tuple[dict | None, str]:
+    source = row or profile or {}
+    wanted_pool = str(source.get("pool_name", "")).strip()
+    model = str(source.get("device_type", "")).strip()
+    group = str(source.get("compatibility_group", "")).strip()
+    candidates = [item for item in pool if item.get("status") == "AVAILABLE"
+                  and (not wanted_pool or item.get("pool_name", "") == wanted_pool)]
+    compatible = [item for item in candidates if config_is_compatible(item, model, group)]
+    if compatible:
+        compatible.sort(key=lambda item: (int(item.get("allocation_order", 0) or 0), item.get("filename", "")))
+        return compatible[0], ""
+    return None, "MODEL_MISMATCH" if candidates else "AUTO_POOL_EMPTY"
+
+
+def _new_assignment(key: str, filename: str, row: dict | None, lease: dict, client_ip: str,
+                    assignment_kind: str = "AUTO") -> dict:
+    now = _now_iso()
+    return {
+        "device_key": key, "assignment_type": assignment_kind, "filename": filename,
+        "status": "RESERVED", "state": "ASSIGNED", "assigned_at": now,
+        "first_seen": now, "last_seen": now, "updated_at": now,
+        "mac": lease.get("mac", ""), "client_id": lease.get("client_id", ""),
+        "serial": (row or {}).get("serial_number", ""),
+        "dhcp_ip": client_ip, "hostname": (row or {}).get("hostname", ""),
+        "observed_model": (row or {}).get("device_type", ""), "request_count": 1,
+        "fetch_count": 0, "fetch_times": [], "last_http_status": "", "last_error": "",
+    }
+
+
+def reserve_auto_assignment(client_ip: str, row: dict | None, profile: dict | None,
+                            lease: dict, key: str) -> tuple[dict | None, str]:
+    """Reserve one file while holding the single allocation lock."""
+    sync_config_pool()
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments()
+        pool = read_config_pool()
+        existing = assignments.get(key)
+        if existing and existing.get("filename"):
+            existing["request_count"] = int(existing.get("request_count", 0) or 0) + 1
+            existing["last_seen"] = _now_iso()
+            write_assignments(assignments)
+            return existing, ""
+        selected, reason = _choose_auto_config(pool, row, profile)
+        if not selected:
+            assignment = assignments.get(key) or _new_assignment(
+                key, "", row or profile, lease, client_ip, "AUTO")
+            assignment.update({"filename": "", "state": "REVIEW_REQUIRED",
+                               "status": "FAILED", "last_error": reason,
+                               "last_seen": _now_iso(), "updated_at": _now_iso()})
+            assignments[key] = assignment
+            write_assignments(assignments)
+            append_history("REVIEW_REQUIRED", key, ip=client_ip, reason=reason)
+            return assignment, reason
+        filename = selected["filename"]
+        selected["status"] = "RESERVED"
+        selected["assigned_device"] = key
+        selected["updated_at"] = _now_iso()
+        assignment = _new_assignment(key, filename, row, lease, client_ip, "AUTO")
+        assignments[key] = assignment
+        write_config_pool(pool)
+        write_assignments(assignments)
+        append_history("RESERVE_AUTO", key, filename=filename, ip=client_ip)
+        return assignment, ""
+
+
+def _record_assignment_event(key: str, *, state: str | None = None, status: str | None = None,
+                            http_status: str = "", error: str = "", bytes_sent: int = 0) -> dict | None:
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments()
+        assignment = assignments.get(key)
+        if not assignment:
+            return None
+        now = _now_iso()
+        assignment["updated_at"] = now
+        assignment["last_seen"] = now
+        if state:
+            assignment["state"] = state
+        if status:
+            assignment["status"] = status
+        if http_status:
+            assignment["last_http_status"] = str(http_status)
+        if error:
+            assignment["last_error"] = error
+        if bytes_sent:
+            assignment["last_bytes_sent"] = bytes_sent
+        write_assignments(assignments)
+        return assignment
+
+
+def _parse_time(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _ensure_static_runtime(key: str, row: dict, filename: str, client_ip: str, lease: dict) -> dict:
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments()
+        old = assignments.get(key)
+        if old and old.get("assignment_type") == "AUTO" and old.get("filename") != filename:
+            pool = read_config_pool()
+            _release_auto_locked(assignments, pool, key, "STATIC_MAPPING")
+            write_config_pool(pool)
+            append_history("STATIC_OVERRIDE", key, filename=filename)
+        assignment = assignments.get(key) or _new_assignment(key, filename, row, lease, client_ip, "STATIC")
+        assignment.update({"assignment_type": "STATIC", "filename": filename,
+                           "last_seen": _now_iso(), "state": assignment.get("state", "ASSIGNED")})
+        pool = read_config_pool()
+        meta = config_file_meta(filename, pool)
+        if meta:
+            meta.update({"status": "RESERVED", "assigned_device": key, "updated_at": _now_iso()})
+            write_config_pool(pool)
+        assignments[key] = assignment
+        write_assignments(assignments)
+        return assignment
+
+
+def _fetch_times_in_window(assignment: dict, minutes: int) -> list[str]:
+    cutoff = datetime.now(timezone.utc).timestamp() - max(0, minutes) * 60
+    result = []
+    for value in assignment.get("fetch_times", []):
+        parsed = _parse_time(value)
+        if parsed and parsed.timestamp() >= cutoff:
+            result.append(value)
+    return result
+
+
+def _record_dynamic_fetch(key: str, filename: str, body: bytes, status_code: int = 200,
+                         error: str = "") -> None:
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments()
+        assignment = assignments.get(key)
+        if not assignment:
+            return
+        now = _now_iso()
+        assignment["last_seen"] = now
+        assignment["updated_at"] = now
+        assignment["last_http_status"] = str(status_code)
+        assignment["last_bytes_sent"] = len(body)
+        assignment["fetch_times"] = _fetch_times_in_window(assignment, _safe_int(read_settings(), "repeated_fetch_window_minutes", 10))
+        assignment["fetch_times"].append(now)
+        assignment["fetch_count"] = int(assignment.get("fetch_count", 0) or 0) + 1
+        if error:
+            assignment["state"] = "FETCH_FAILED"
+            assignment["status"] = "FAILED"
+            assignment["last_error"] = error
+        elif assignment["fetch_count"] > _safe_int(read_settings(), "repeated_fetch_limit", 5):
+            assignment["state"] = "REPEATED_FETCH"
+            assignment["status"] = "FETCHED"
+        else:
+            assignment["state"] = "FETCHED"
+            assignment["status"] = "FETCHED"
+        pool = read_config_pool()
+        meta = config_file_meta(filename, pool)
+        if meta:
+            meta["status"] = "FAILED" if error else "FETCHED"
+            meta["assigned_device"] = key
+            meta["updated_at"] = now
+            write_config_pool(pool)
+        write_assignments(assignments)
+    append_history("FETCH_FAILED" if error else "FETCH", key, filename=filename,
+                   http_status=status_code, bytes_sent=len(body), message=error)
+
+
+def dynamic_config_result(client_ip: str) -> tuple[bytes | None, str, int]:
+    settings = read_settings()
+    if not is_full_ztp(settings):
+        return None, "FILE_SERVER_ONLY does not perform DHCP allocation or lease resolution.", 404
+    row, profile, lease, reason = find_request_context(client_ip)
+    if reason != "OK" or not lease:
+        append_history(reason, ip=client_ip, message="Dynamic resolver did not find a unique active lease.")
+        return None, reason, 404
+    key = device_key(row, mac=lease.get("mac", ""), client_id=lease.get("client_id", ""), ip=client_ip)
+    if not key:
+        append_history("LEASE_NOT_FOUND", ip=client_ip)
+        return None, "LEASE_NOT_FOUND", 404
+    source = row or profile or {}
+    kind = assignment_type(source, "AUTO")
+    if kind == "DHCP_ONLY":
+        with _exclusive_lock(ALLOCATION_LOCK):
+            assignments = read_assignments()
+            assignment = assignments.get(key) or _new_assignment(
+                key, "", row or profile, lease, client_ip, "DHCP_ONLY")
+            assignment.update({"assignment_type": "DHCP_ONLY", "filename": "",
+                               "state": "DHCP_ONLY", "status": "DHCP_ONLY",
+                               "last_seen": _now_iso(), "updated_at": _now_iso()})
+            assignments[key] = assignment
+            write_assignments(assignments)
+        append_history("DHCP_ONLY", key, ip=client_ip)
+        return None, "DHCP_ONLY", 204
+    pool = sync_config_pool()
+    if kind == "STATIC":
+        filename, static_error = _static_assignment_error(source, pool)
+        if static_error:
+            if filename:
+                _ensure_static_runtime(key, source, filename, client_ip, lease)
+                _record_assignment_event(key, state="REVIEW_REQUIRED", status="FAILED", error=static_error)
+            append_history(static_error, key, filename=filename, ip=client_ip)
+            return None, static_error, 409
+        if not filename:
+            return None, "STATIC_CONFIG_ERROR", 409
+        _ensure_static_runtime(key, source, filename, client_ip, lease)
+    else:
+        assignment, reserve_error = reserve_auto_assignment(client_ip, row, profile, lease, key)
+        if reserve_error:
+            append_history(reserve_error, key, ip=client_ip)
+            return None, reserve_error, 409
+        filename = assignment.get("filename", "")
+        valid, file_error = _assignment_filename_valid(filename, pool)
+        if not valid:
+            _record_assignment_event(key, state="REVIEW_REQUIRED", status="FAILED", error=file_error)
+            append_history(file_error, key, filename=filename, ip=client_ip)
+            return None, file_error, 409
+    _record_assignment_event(key, state="FETCHING", status="RESERVED")
+    path = NGINX_DIR / filename
+    try:
+        body = path.read_bytes()
+    except (OSError, FileNotFoundError) as exc:
+        _record_dynamic_fetch(key, filename, b"", 404, "CONFIG_MISSING")
+        return None, f"CONFIG_MISSING: {exc}", 404
+    _record_dynamic_fetch(key, filename, body, 200)
+    return body, filename, 200
+
+
+def _dhcp_retry_counts() -> dict[str, int]:
+    if not SYSLOG_FILE.exists():
+        return {}
+    try:
+        lines = SYSLOG_FILE.read_text(errors="replace").splitlines()[-3000:]
+    except OSError:
+        return {}
+    settings = read_settings()
+    cutoff = datetime.now(timezone.utc).timestamp() - _safe_int(
+        settings, "dhcp_retry_window_minutes", 5) * 60
+    counts = {}
+    for line in lines:
+        if not re.search(r"DHCP(?:DISCOVER|REQUEST)", line, re.I):
+            continue
+        timestamp = re.match(r"^([A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d)", line)
+        if timestamp:
+            try:
+                parsed = datetime.strptime(
+                    f"{datetime.now().year} {timestamp.group(1)}", "%Y %b %d %H:%M:%S")
+                parsed = parsed.replace(tzinfo=timezone.utc)
+                if parsed.timestamp() < cutoff:
+                    continue
+            except ValueError:
+                pass
+        match = re.search(r"from\s+([0-9a-f:]{17})", line, re.I)
+        if match:
+            key = f"mac:{match.group(1).lower()}"
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def refresh_runtime_states() -> dict:
+    """Promote runtime states without ever changing COMPLETED/FAILED verification history."""
+    settings = read_settings()
+    now = datetime.now(timezone.utc)
+    changed = False
+    retry_counts = _dhcp_retry_counts()
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments()
+        for key, assignment in assignments.items():
+            if assignment.get("state") == "COMPLETED" or assignment.get("status") == "COMPLETED":
+                continue
+            if retry_counts.get(key, 0) > _safe_int(settings, "dhcp_retry_limit", 10):
+                if assignment.get("state") != "DHCP_RETRY_LOOP":
+                    assignment["state"] = "DHCP_RETRY_LOOP"; assignment["last_error"] = "DHCP retry threshold exceeded"; changed = True
+                continue
+            assigned_at = _parse_time(assignment.get("assigned_at"))
+            if (assigned_at and assignment.get("state") in {"ASSIGNED", "FETCHING"} and
+                    (now - assigned_at).total_seconds() >= _safe_int(settings, "assigned_no_fetch_minutes", 5) * 60):
+                assignment["state"] = "ASSIGNED_NO_FETCH"; changed = True
+            fetch_times = _fetch_times_in_window(assignment, _safe_int(settings, "repeated_fetch_window_minutes", 10))
+            if len(fetch_times) > _safe_int(settings, "repeated_fetch_limit", 5):
+                assignment["state"] = "REPEATED_FETCH"; changed = True
+            elif assignment.get("state") == "FETCHED":
+                assignment["state"] = "PENDING_CHECK"; changed = True
+        if changed:
+            write_assignments(assignments)
+    return read_assignments()
+
+
+def provisioning_summary() -> dict:
+    assignments = refresh_runtime_states()
+    pool = sync_config_pool()
+    counts = {key: 0 for key in ["total", "available", "assigned", "dhcp_only", "fetched", "pending_check", "completed", "failed"]}
+    counts["total"] = len(pool)
+    counts["available"] = sum(1 for item in pool if item.get("status") == "AVAILABLE")
+    counts["assigned"] = sum(1 for item in assignments.values() if item.get("state") in {"ASSIGNED", "FETCHING"})
+    counts["dhcp_only"] = sum(1 for item in assignments.values() if item.get("state") == "DHCP_ONLY")
+    counts["fetched"] = sum(1 for item in assignments.values() if item.get("state") == "FETCHED")
+    counts["pending_check"] = sum(1 for item in assignments.values() if item.get("state") in {"PENDING_CHECK", "REVIEW_REQUIRED", "ASSIGNED_NO_FETCH"})
+    counts["completed"] = sum(1 for item in assignments.values() if item.get("state") == "COMPLETED")
+    counts["failed"] = sum(1 for item in assignments.values() if item.get("state") in {"FAILED", "FETCH_FAILED", "DHCP_RETRY_LOOP"})
+    alerts = [item for item in assignments.values() if item.get("state") in {"REVIEW_REQUIRED", "ASSIGNED_NO_FETCH", "FETCH_FAILED", "REPEATED_FETCH", "DHCP_RETRY_LOOP"}]
+    return {"counts": counts, "alerts": alerts, "assignments": assignments, "pool": pool}
 
 
 # ------------------------------------------------------------ health --------
@@ -1032,20 +1793,275 @@ def local_ipv4s() -> list[str]:
     return [ip for ip in ips if not ip.startswith("127.")]
 
 
+def operator_name() -> str:
+    return (request.authorization.username if request.authorization else "operator")
+
+
+def provisioning_rows() -> list[dict]:
+    summary = provisioning_summary()
+    assignments = summary["assignments"]
+    results = read_results()
+    leases = {} if not is_full_ztp() else parse_leases()
+    rows = []
+    seen = set()
+    for row in read_devices():
+        key = device_key(row)
+        seen.add(key)
+        assignment = assignments.get(key, {})
+        result = results.get(key, {})
+        lease = leases.get(row.get("ip_address", ""), {})
+        rows.append({
+            "device_key": key, "serial": row.get("serial_number", ""),
+            "mac": row.get("mac_address", "") or lease.get("mac", ""),
+            "client_id": row.get("client_id", "") or lease.get("client_id", ""),
+            "dhcp_ip": row.get("ip_address", ""),
+            "observed_model": row.get("device_type", "") or assignment.get("observed_model", ""),
+            "hostname": row.get("hostname", "") or assignment.get("hostname", ""),
+            "config_filename": assignment.get("filename", "") or row.get("specific_config_file", ""),
+            "assignment_type": assignment.get("assignment_type", assignment_type(row)),
+            "config_status": assignment.get("status", ""),
+            "state": assignment.get("state", "DHCP_SEEN"),
+            "request_count": assignment.get("request_count", 0),
+            "fetch_count": assignment.get("fetch_count", 0),
+            "http_status": assignment.get("last_http_status", ""),
+            "first_seen": assignment.get("first_seen", ""),
+            "assigned_at": assignment.get("assigned_at", ""),
+            "fetch_time": (assignment.get("fetch_times") or [""])[-1],
+            "verify_time": result.get("verify_time", ""),
+            "result": result.get("result", ""), "remarks": result.get("remarks", ""),
+            "last_error": assignment.get("last_error", ""),
+        })
+    for key, assignment in assignments.items():
+        if key in seen:
+            continue
+        result = results.get(key, {})
+        rows.append({
+            "device_key": key, "serial": "", "mac": assignment.get("mac", ""),
+            "client_id": assignment.get("client_id", ""), "dhcp_ip": assignment.get("dhcp_ip", ""),
+            "observed_model": assignment.get("observed_model", ""),
+            "hostname": assignment.get("hostname", ""), "config_filename": assignment.get("filename", ""),
+            "assignment_type": assignment.get("assignment_type", "AUTO"),
+            "config_status": assignment.get("status", ""), "state": assignment.get("state", ""),
+            "request_count": assignment.get("request_count", 0), "fetch_count": assignment.get("fetch_count", 0),
+            "http_status": assignment.get("last_http_status", ""), "first_seen": assignment.get("first_seen", ""),
+            "assigned_at": assignment.get("assigned_at", ""),
+            "fetch_time": (assignment.get("fetch_times") or [""])[-1],
+            "verify_time": result.get("verify_time", ""), "result": result.get("result", ""),
+            "remarks": result.get("remarks", ""), "last_error": assignment.get("last_error", ""),
+        })
+    return rows
+
+
+MAPPING_EXPORT_FIELDS = ["serial", "mac", "client_id", "dhcp_ip", "observed_model", "hostname",
+                         "config_filename", "assignment_type", "config_status", "first_seen",
+                         "assigned_at", "fetch_time", "verify_time", "result", "remarks"]
+HISTORY_EXPORT_FIELDS = ["timestamp", "device_key", "serial", "mac", "ip", "event_type",
+                         "old_value", "new_value", "filename", "http_status", "operator", "message"]
+
+
+def export_history_rows() -> list[dict]:
+    return [{field: row.get(field, "") for field in HISTORY_EXPORT_FIELDS} for row in read_history(100000)]
+
+
+def xlsx_response(rows: list[dict], fields: list[str], filename: str):
+    """Create XLSX only when the optional openpyxl dependency is installed."""
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return Response("XLSX export requires openpyxl; install requirements.txt.\n", 503,
+                        mimetype="text/plain")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Export"
+    sheet.append(fields)
+    for row in rows:
+        sheet.append([row.get(field, "") for field in fields])
+    output = io.BytesIO()
+    workbook.save(output)
+    body = output.getvalue()
+    return Response(body, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
 # ------------------------------------------------------------ routes --------
+@app.route("/ztp/config")
+def dynamic_config():
+    # Trust X-Real-IP only when the request came through the local Nginx
+    # proxy; a device connecting directly to :8080 must not spoof a lease IP.
+    remote = request.remote_addr or ""
+    forwarded = request.headers.get("X-Real-IP", "").strip()
+    client_ip = forwarded if remote in {"127.0.0.1", "::1"} and forwarded else remote
+    body, detail, status = dynamic_config_result(client_ip)
+    if status == 204:
+        return Response("", status=204)
+    if body is None:
+        return Response(f"ZTP resolver: {detail}\n", status=status, mimetype="text/plain")
+    return Response(body, status=200, mimetype="text/plain",
+                    headers={"Cache-Control": "no-store", "X-ZTP-Config": detail})
+
+
+@app.route("/provisioning")
+def provisioning():
+    settings = read_settings()
+    summary = provisioning_summary()
+    return render_template("provisioning.html", settings=settings, mode=settings.get("global_mode"),
+                           rows=provisioning_rows(), pool=summary["pool"],
+                           counts=summary["counts"], alerts=summary["alerts"],
+                           configs=list_configs(), author=AUTHOR, version=VERSION)
+
+
+@app.route("/provisioning/mode", methods=["POST"])
+def provisioning_mode():
+    mode = request.form.get("global_mode", "").strip().upper()
+    if mode not in GLOBAL_MODES:
+        flash("Mode must be FULL_ZTP or FILE_SERVER_ONLY.", "danger")
+        return redirect(url_for("provisioning"))
+    settings = read_settings(); old = settings.get("global_mode", "FULL_ZTP")
+    settings["global_mode"] = mode
+    write_settings(settings)
+    append_history("MODE_CHANGE", operator=operator_name(), old_value=old, new_value=mode)
+    flash(f"Mode changed to {mode}. No DHCP service was restarted.", "success")
+    return redirect(url_for("provisioning"))
+
+
+@app.route("/provisioning/config", methods=["POST"])
+def provisioning_config_metadata():
+    filename = os.path.basename(request.form.get("filename", "").strip())
+    if not filename or not _allowed(filename) or not (NGINX_DIR / filename).is_file():
+        flash("Config metadata was not saved: file is missing or filename is not allowed.", "danger")
+        return redirect(url_for("provisioning"))
+    supported = _metadata_models(request.form.get("supported_models", ""))
+    group = request.form.get("compatibility_group", "").strip()
+    hostname = request.form.get("hostname", "").strip()
+    pool_name = request.form.get("pool_name", "").strip()
+    try:
+        order = int(request.form.get("allocation_order", "0") or 0)
+    except ValueError:
+        order = 0
+    with _exclusive_lock(ALLOCATION_LOCK):
+        pool = read_config_pool()
+        if hostname and any(item.get("hostname") == hostname and item.get("filename") != filename for item in pool):
+            flash(f"Config hostname '{hostname}' is already used by another file.", "danger")
+            return redirect(url_for("provisioning"))
+        row = config_file_meta(filename, pool)
+        if not row:
+            row = {"filename": filename, "created_at": _now_iso(), "status": "AVAILABLE", "assigned_device": ""}
+            pool.append(row)
+        row.update({"hostname": hostname, "supported_models": supported,
+                    "compatibility_group": group, "pool_name": pool_name,
+                    "allocation_order": order or len(pool), "checksum": config_sha256(NGINX_DIR / filename),
+                    "updated_at": _now_iso()})
+        write_config_pool(pool)
+    append_history("CONFIG_METADATA", operator=operator_name(), filename=filename,
+                   new_value=json.dumps({"hostname": hostname, "supported_models": supported,
+                                         "compatibility_group": group, "pool_name": pool_name}))
+    flash(f"Config metadata saved for {filename}.", "success")
+    return redirect(url_for("provisioning"))
+
+
+@app.route("/provisioning/release/<path:provision_key>", methods=["POST"])
+def release_assignment(provision_key):
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments()
+        pool = read_config_pool()
+        assignment = assignments.get(provision_key)
+        if not assignment:
+            flash("No Auto Assignment found for this device.", "warning")
+            return redirect(url_for("provisioning"))
+        if assignment.get("assignment_type") != "AUTO":
+            flash("Only AUTO assignments can be released; STATIC mappings require an explicit mapping change.", "warning")
+            return redirect(url_for("provisioning"))
+        filename = assignment.get("filename", "")
+        meta = config_file_meta(filename, pool)
+        if meta:
+            meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
+        assignments.pop(provision_key, None)
+        write_config_pool(pool); write_assignments(assignments)
+    append_history("RELEASE_AUTO", provision_key, operator=operator_name(), filename=filename)
+    flash("Auto Assignment released; config returned to AVAILABLE.", "success")
+    return redirect(url_for("provisioning"))
+
+
+@app.route("/provisioning/reset/<path:provision_key>", methods=["POST"])
+def reset_provisioning(provision_key):
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments(); pool = read_config_pool(); results = read_results()
+        old = assignments.pop(provision_key, None)
+        if old:
+            meta = config_file_meta(old.get("filename", ""), pool)
+            if meta:
+                meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
+        results.pop(provision_key, None)
+        write_config_pool(pool); write_assignments(assignments); write_results(results)
+    append_history("RESET", provision_key, operator=operator_name())
+    flash("Provisioning runtime and verification result reset; history was kept.", "success")
+    return redirect(url_for("provisioning"))
+
+
+@app.route("/provisioning/retry/<path:provision_key>", methods=["POST"])
+def retry_provisioning(provision_key):
+    with _exclusive_lock(ALLOCATION_LOCK):
+        assignments = read_assignments(); assignment = assignments.get(provision_key)
+        if not assignment:
+            flash("Cannot retry: assignment not found.", "danger")
+            return redirect(url_for("provisioning"))
+        assignment.update({"state": "ASSIGNED", "status": "RESERVED", "last_error": "", "updated_at": _now_iso()})
+        write_assignments(assignments)
+    append_history("RETRY", provision_key, operator=operator_name(), filename=assignment.get("filename", ""))
+    flash("Device marked for retry; its existing config assignment was preserved.", "success")
+    return redirect(url_for("provisioning"))
+
+
+@app.route("/provisioning/verify/<path:provision_key>", methods=["POST"])
+def verify_provisioning(provision_key):
+    result = request.form.get("result", "").strip().upper()
+    if result not in {"COMPLETED", "FAILED"}:
+        flash("Verification result must be COMPLETED or FAILED.", "danger")
+        return redirect(url_for("provisioning"))
+    verification = {"serial": request.form.get("serial", "").strip(),
+                    "model": request.form.get("model", "").strip(),
+                    "hostname": request.form.get("hostname", "").strip(),
+                    "result": result, "remarks": request.form.get("remarks", "").strip(),
+                    "verify_time": _now_iso(), "operator": operator_name()}
+    with _exclusive_lock(ALLOCATION_LOCK):
+        results = read_results(); assignments = read_assignments(); pool = read_config_pool()
+        results[provision_key] = verification
+        if provision_key in assignments:
+            assignments[provision_key].update({"state": result, "status": result, "updated_at": _now_iso()})
+            meta = config_file_meta(assignments[provision_key].get("filename", ""), pool)
+            if meta:
+                meta.update({"status": result, "assigned_device": provision_key, "updated_at": _now_iso()})
+        write_results(results); write_assignments(assignments); write_config_pool(pool)
+    append_history("COMPLETE" if result == "COMPLETED" else "FAIL", provision_key,
+                   operator=operator_name(), new_value=json.dumps(verification, ensure_ascii=False))
+    flash(f"Verification saved as {result}.", "success" if result == "COMPLETED" else "warning")
+    return redirect(url_for("provisioning"))
+
+
+@app.route("/provisioning/timeline/<path:provision_key>")
+def provisioning_timeline(provision_key):
+    rows = [row for row in read_history(100000) if row.get("device_key") == provision_key]
+    return jsonify({"device_key": provision_key, "events": rows})
+
+
 @app.route("/")
 def index():
     settings = read_settings()
     devices = read_devices()
     profiles = read_profiles()
+    provisioning = provisioning_summary()
+    network_messages = network_checks(settings) if is_full_ztp(settings) else []
+    network_errors = _network_errors(settings) if is_full_ztp(settings) else []
+    network_warnings = _network_warnings(settings) if is_full_ztp(settings) else []
     return render_template("index.html",
         configs=list_configs(), config_checks=all_config_status(),
         devices=devices, profiles=profiles, mapping_issues=mapping_issues(devices, profiles), settings=settings,
-        interfaces=network_interfaces(), network_checks=network_checks(settings),
-        network_errors=_network_errors(settings), network_warnings=_network_warnings(settings),
-        pool_errors=validate_dhcp_pool(settings),
+        interfaces=network_interfaces() if is_full_ztp(settings) else [], network_checks=network_messages,
+        network_errors=network_errors, network_warnings=network_warnings,
+        pool_errors=validate_dhcp_pool(settings) if is_full_ztp(settings) else [],
         pool_suggestion=dhcp_pool_suggestion(settings),
         pool_prefix_length=netmask_prefix_length(settings.get("netmask", "")),
+        provisioning=provisioning, mode=settings.get("global_mode", "FULL_ZTP"),
         creds=creds_overview(), match_methods=MATCH_METHODS, dev_mode=DEV_MODE,
         allowed_ext=", ".join(sorted(ALLOWED_EXT)), author=AUTHOR, version=VERSION)
 
@@ -1060,12 +2076,14 @@ def settings_suggest():
 @app.route("/api/network")
 def network_api():
     settings = read_settings()
+    checks = network_checks(settings) if is_full_ztp(settings) else []
     return jsonify({
-        "interfaces": network_interfaces(),
-        "network_checks": network_checks(settings),
-        "network_errors": _network_errors(settings),
-        "network_warnings": _network_warnings(settings),
-        "pool_errors": validate_dhcp_pool(settings),
+        "mode": settings.get("global_mode", "FULL_ZTP"),
+        "interfaces": network_interfaces() if is_full_ztp(settings) else [],
+        "network_checks": checks,
+        "network_errors": [m for m in checks if m.startswith("ERROR:")],
+        "network_warnings": [m for m in checks if m.startswith("WARN:")],
+        "pool_errors": validate_dhcp_pool(settings) if is_full_ztp(settings) else [],
     })
 
 
@@ -1091,6 +2109,10 @@ def service_restart():
 @app.route("/settings", methods=["POST"])
 def settings_save():
     s = {k: request.form.get(k, "").strip() for k in SETTINGS_FIELDS}
+    current = read_settings()
+    for key in SETTINGS_FIELDS:
+        if not s.get(key):
+            s[key] = current.get(key, DEFAULT_SETTINGS.get(key, ""))
     prefix = request.form.get("prefix_length", "").strip()
     if prefix:
         try:
@@ -1098,7 +2120,7 @@ def settings_save():
         except ValueError as exc:
             flash(f"DHCP pool is not valid: {exc}", "danger")
             return redirect(url_for("index") + "#network-view")
-    pool_errors = validate_dhcp_pool(s)
+    pool_errors = [] if not is_full_ztp(s) else validate_dhcp_pool(s)
     if pool_errors:
         flash("DHCP pool is not valid:\n" + "\n".join(pool_errors), "danger")
         return redirect(url_for("index"))
@@ -1107,12 +2129,12 @@ def settings_save():
         write_settings(s)
         flash("Draft saved. DHCP was not restarted.", "info")
         return redirect(url_for("index") + "#network-view")
-    if request.form.get("confirm_dhcp") != "yes":
+    if is_full_ztp(s) and request.form.get("confirm_dhcp") != "yes":
         flash("Confirm that the DHCP pool is correct and does not overlap another DHCP server before applying.", "warning")
         return redirect(url_for("index"))
     write_settings(s)
     ok, msg = deploy_dhcpd(generate_dhcpd())
-    checks = network_checks(s)
+    checks = network_checks(s) if is_full_ztp(s) else []
     if checks:
         # deploy_dhcpd() includes readiness errors in its message when the
         # production safety gate blocks a restart.  Add only lines that are
@@ -1166,6 +2188,19 @@ def upload():
         (UPLOAD_DIR / name).write_bytes(data); (NGINX_DIR / name).write_bytes(data)
     except PermissionError:
         flash(f"Cannot write to {NGINX_DIR} (need sudo?).", "danger"); return redirect(url_for("index"))
+    with _exclusive_lock(ALLOCATION_LOCK):
+        pool = read_config_pool()
+        meta = config_file_meta(name, pool)
+        if not meta:
+            meta = {"filename": name, "hostname": "", "supported_models": [],
+                    "compatibility_group": "", "pool_name": "", "allocation_order": len(pool) + 1,
+                    "status": "AVAILABLE", "assigned_device": "", "created_at": _now_iso()}
+            pool.append(meta)
+        meta.update({"checksum": hashlib.sha256(data).hexdigest(), "updated_at": _now_iso()})
+        if meta.get("status") == "MISSING":
+            meta["status"] = "AVAILABLE"
+        write_config_pool(pool)
+    append_history("UPLOAD_CONFIG", operator=operator_name(), filename=name)
     issues = check_config_text(data.decode("utf-8", errors="replace"), name)
     for w in issues:
         flash(f"[{name}] {w}", "warning")
@@ -1180,14 +2215,27 @@ def delete_config(fname):
                                        # outside NGINX_DIR/UPLOAD_DIR
     if not fname or not _allowed(fname):
         flash("Invalid file name.", "danger"); return redirect(url_for("index"))
+    force = request.form.get("force_delete") == "yes" and request.form.get("confirm_force") == "yes"
     refs = config_references(fname)
-    if refs:
-        flash(f"Cannot delete {fname}: still used by {', '.join(refs)}.", "danger"); return redirect(url_for("index"))
+    pool = sync_config_pool()
+    meta = config_file_meta(fname, pool)
+    assigned = [key for key, item in read_assignments().items() if item.get("filename") == fname]
+    if refs and not force:
+        flash(f"Cannot delete {fname}: still used by {', '.join(refs)}. Use Force Delete only after review.", "danger"); return redirect(url_for("index"))
+    if assigned and not force:
+        flash(f"Cannot delete {fname}: active assignment(s) exist. Use Force Delete only after review.", "danger"); return redirect(url_for("index"))
     for d in (NGINX_DIR, UPLOAD_DIR):
         try:
             (d / fname).unlink(missing_ok=True)
         except (PermissionError, OSError):
             flash(f"Cannot remove {fname} (need sudo?).", "danger"); return redirect(url_for("index"))
+    with _exclusive_lock(ALLOCATION_LOCK):
+        rows = read_config_pool()
+        item = config_file_meta(fname, rows)
+        if item:
+            item.update({"status": "MISSING", "updated_at": _now_iso()})
+            write_config_pool(rows)
+    append_history("FORCE_DELETE" if force else "DELETE_CONFIG", operator=operator_name(), filename=fname)
     flash(f"Deleted {fname}.", "success"); return redirect(url_for("index"))
 
 
@@ -1206,7 +2254,11 @@ def deploy():
            "hostname": host,
            "ip_address": request.form.get("ip_address", "").strip(),
            "mgmt_ip": request.form.get("mgmt_ip", "").strip(),
+           "client_id": request.form.get("client_id", "").strip(),
+           "compatibility_group": request.form.get("compatibility_group", "").strip(),
            "specific_config_file": request.form.get("specific_config_file", "").strip(),
+           "assignment_type": request.form.get("assignment_type", "STATIC").strip().upper() or "STATIC",
+           "pool_name": request.form.get("pool_name", "").strip(),
            "option60_confirmed": request.form.get("option60_confirmed", "").strip()}
     if method == "serial" and not serial:
         flash("Serial Number is required for 'By Serial'.", "danger"); return redirect(url_for("index"))
@@ -1219,8 +2271,11 @@ def deploy():
         flash("Hostname is required.", "danger"); return redirect(url_for("index"))
     # Config file is OPTIONAL: leave blank to let the device use the shared Generic Profile
     # (matched by vendor-class). A By-MAC device only needs a DHCP IP if it has its own config.
-    if method == "mac" and row["specific_config_file"] and not row["ip_address"]:
-        flash("DHCP IP is required for a By-MAC device that has its own config file.", "danger")
+    if method == "mac" and row["assignment_type"] == "AUTO" and not row["ip_address"]:
+        flash("DHCP IP is required for a By-MAC Auto device so the resolver can find its lease.", "danger")
+        return redirect(url_for("index"))
+    if row["assignment_type"] not in ASSIGNMENT_TYPES:
+        flash("Assignment type must be STATIC, AUTO or DHCP_ONLY.", "danger")
         return redirect(url_for("index"))
 
     existing = [r for r in read_devices() if r.get("hostname") != host]
@@ -1236,14 +2291,35 @@ def deploy():
 
     rows = [r for r in read_devices() if r.get("hostname") != host]
     rows.append(row); write_devices(rows)
+    if row["assignment_type"] == "STATIC":
+        release_conflicting_auto_for_static(row)
     ok, msg = deploy_dhcpd(generate_dhcpd())
+    append_history("STATIC_MAPPING" if row["assignment_type"] == "STATIC" else "SET_ASSIGNMENT_TYPE",
+                   device_key(row), operator=operator_name(), filename=row.get("specific_config_file", ""),
+                   new_value=row["assignment_type"])
     flash(msg, "success" if ok else "danger")
     return redirect(url_for("index"))
 
 
 @app.route("/delete/<hostname>", methods=["POST"])
 def delete(hostname):
-    write_devices([r for r in read_devices() if r.get("hostname") != hostname])
+    rows = read_devices()
+    removed = next((r for r in rows if r.get("hostname") == hostname), None)
+    write_devices([r for r in rows if r.get("hostname") != hostname])
+    if removed:
+        key = device_key(removed)
+        with _exclusive_lock(ALLOCATION_LOCK):
+            assignments = read_assignments(); pool = read_config_pool()
+            old = assignments.pop(key, None)
+            if old and old.get("assignment_type") == "AUTO":
+                meta = config_file_meta(old.get("filename", ""), pool)
+                if meta:
+                    meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
+            static_meta = config_file_meta(removed.get("specific_config_file", ""), pool)
+            if static_meta and static_meta.get("assigned_device") == key:
+                static_meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
+            write_config_pool(pool); write_assignments(assignments)
+        append_history("DELETE_STATIC_MAPPING", key, operator=operator_name(), hostname=hostname)
     ok, msg = deploy_dhcpd(generate_dhcpd())
     flash(f"Deleted {hostname}. {msg}", "success" if ok else "warning")
     return redirect(url_for("index"))
@@ -1255,6 +2331,9 @@ def add_profile():
          "vendor_class": request.form.get("vendor_class", "").strip(),
          "match_mode": request.form.get("match_mode", "contains").strip() or "contains",
          "config_file": request.form.get("config_file", "").strip(),
+         "assignment_type": request.form.get("assignment_type", "STATIC").strip().upper() or "STATIC",
+         "pool_name": request.form.get("pool_name", "").strip(),
+         "compatibility_group": request.form.get("compatibility_group", "").strip(),
          "option60_confirmed": request.form.get("option60_confirmed", "").strip()}
     existing = [r for r in read_profiles()
                 if not (r.get("vendor_class") == p["vendor_class"]
@@ -1270,6 +2349,7 @@ def add_profile():
                     and r.get("match_mode", "contains") == p["match_mode"])]
     rows.append(p); write_profiles(rows)
     ok, msg = deploy_dhcpd(generate_dhcpd())
+    append_history("PROFILE_UPDATE", operator=operator_name(), new_value=json.dumps(p, ensure_ascii=False))
     flash(f"Profile saved. {msg}", "success" if ok else "warning")
     return redirect(url_for("index"))
 
@@ -1278,7 +2358,9 @@ def add_profile():
 def delete_profile(idx):
     rows = read_profiles()
     if 0 <= idx < len(rows):
-        rows.pop(idx); write_profiles(rows)
+        removed = rows.pop(idx); write_profiles(rows)
+        append_history("DELETE_PROFILE", operator=operator_name(),
+                       old_value=json.dumps(removed, ensure_ascii=False))
         ok, msg = deploy_dhcpd(generate_dhcpd())
         flash(f"Profile removed. {msg}", "success" if ok else "warning")
     return redirect(url_for("index"))
@@ -1296,11 +2378,15 @@ def _csv_response(rows, fields, fname):
 def export(kind, fmt):
     if kind == "devices": rows, fields = read_devices(), DEVICE_FIELDS
     elif kind == "profiles": rows, fields = read_profiles(), PROFILE_FIELDS
+    elif kind == "mapping": rows, fields = provisioning_rows(), MAPPING_EXPORT_FIELDS
+    elif kind == "history": rows, fields = export_history_rows(), HISTORY_EXPORT_FIELDS
     else:
         flash("Unknown export.", "danger"); return redirect(url_for("index"))
     if fmt == "json":
         return Response(json.dumps(rows, indent=2), mimetype="application/json",
                         headers={"Content-Disposition": f"attachment; filename={kind}.json"})
+    if fmt == "xlsx":
+        return xlsx_response(rows, fields, f"{kind}.xlsx")
     return _csv_response(rows, fields, f"{kind}.csv")
 
 
@@ -1316,6 +2402,10 @@ def import_data(kind):
     except (json.JSONDecodeError, csv.Error) as e:
         flash(f"Parse error: {e}", "danger"); return redirect(url_for("index"))
     clean = [{k: str(r.get(k, "")).strip() for k in fields} for r in rows if isinstance(r, dict)]
+    if kind == "devices":
+        for device in clean:
+            if not device.get("assignment_type"):
+                device["assignment_type"] = "STATIC" if device.get("specific_config_file") else "DHCP_ONLY"
     if kind == "profiles":
         for profile in clean:
             profile["match_mode"] = profile.get("match_mode") or "contains"
@@ -1333,6 +2423,7 @@ def import_data(kind):
             flash("Import was not saved:\n" + "\n".join(dict.fromkeys(errors)), "danger")
             return redirect(url_for("index"))
         write_devices(candidate)
+        append_history("IMPORT_DEVICES", operator=operator_name(), new_value=str(len(clean)))
     else:
         existing = [] if mode == "replace" else read_profiles()
         vcs = {(r["vendor_class"], r.get("match_mode", "contains")) for r in clean}
@@ -1346,6 +2437,7 @@ def import_data(kind):
             flash("Import was not saved:\n" + "\n".join(dict.fromkeys(errors)), "danger")
             return redirect(url_for("index"))
         write_profiles(candidate)
+        append_history("IMPORT_PROFILES", operator=operator_name(), new_value=str(len(clean)))
     ok, msg = deploy_dhcpd(generate_dhcpd())
     flash(f"Imported {len(clean)} {kind} ({mode}). {msg}", "success" if ok else "warning")
     return redirect(url_for("index"))
@@ -1354,13 +2446,15 @@ def import_data(kind):
 @app.route("/bindings")
 def bindings():
     devices = read_devices(); s = read_settings()
-    leases = parse_leases()
+    full = is_full_ztp(s)
+    leases = parse_leases() if full else {}
     src = (request.args.get("src") or request.args.get("src_sel") or "").strip() or None
-    health = run_health(devices, src) if request.args.get("health") == "1" else {}
+    health = run_health(devices, src) if full and request.args.get("health") == "1" else {}
     fixed = [d["ip_address"] for d in devices if d.get("ip_address")]
     return render_template("bindings.html",
         devices=devices, leases=leases, health=health, settings=s, src=src or "",
-        sources=local_ipv4s(), fixed_count=len(fixed), lease_count=len(leases),
+        sources=local_ipv4s() if full else [], fixed_count=len(fixed), lease_count=len(leases),
+        mode=s.get("global_mode", "FULL_ZTP"),
         creds_set=bool(read_creds().get("default") or read_creds().get("by_host")),
         author=AUTHOR, version=VERSION)
 
@@ -1390,6 +2484,12 @@ def _binding_rows(health: dict, leases: dict):
 
 @app.route("/export/bindings.csv")
 def export_bindings():
+    settings = read_settings()
+    if not is_full_ztp(settings):
+        return _csv_response(_binding_rows({}, {}), ["hostname", "match_method", "identifier", "device_type",
+                                                     "config_file", "dhcp_ip", "mgmt_ip", "checked_ip",
+                                                     "lease_state", "ping", "ssh", "provisioning", "timestamp"],
+                             "ztp_bindings.csv")
     src = (request.args.get("src") or request.args.get("src_sel") or "").strip() or None
     health = run_health(read_devices(), src) if request.args.get("health") == "1" else {}
     rows = _binding_rows(health, parse_leases())
@@ -1414,6 +2514,10 @@ def tail(path: Path, n: int = 300, grep: str = "") -> list[str]:
 
 def _device_for(base: str, client_ip: str, devices, profiles, leases) -> str:
     """Resolve a config fetch to a device serial/hostname (or shared profile)."""
+    if base == "config":
+        for item in provisioning_rows():
+            if item.get("dhcp_ip") == client_ip:
+                return item.get("hostname") or item.get("device_key", "")
     for d in devices:
         if d.get("specific_config_file") == base:
             return d.get("serial_number") or d.get("hostname") or d.get("mac_address") or ""
@@ -1433,14 +2537,18 @@ def _device_for(base: str, client_ip: str, devices, profiles, leases) -> str:
 
 def nginx_config_fetches(n: int = 200) -> list[dict]:
     """Parse nginx access log for GET /configs/* — which client fetched which config + resolved device."""
-    devices, profiles, leases = read_devices(), read_profiles(), parse_leases()
+    devices, profiles = read_devices(), read_profiles()
+    leases = parse_leases() if is_full_ztp() else {}
     out = []
-    for line in tail(NGINX_ACCESS, n=2000, grep="/configs/"):
-        m = re.search(r'(\d+\.\d+\.\d+\.\d+).*\[([^\]]+)\].*"(?:GET|HEAD)\s+(/configs/\S+)\s.*?"\s+(\d{3})', line)
+    # Include both legacy fixed-file fetches and the dynamic /ztp/config
+    # resolver; the latter is the production path for AUTO assignments.
+    for line in tail(NGINX_ACCESS, n=2000):
+        m = re.search(r'(\d+\.\d+\.\d+\.\d+).*?\[([^\]]+)\].*?"(?:GET|HEAD)\s+(/(?:configs|ztp)/\S+)\s+[^\"]*"\s+(\d{3})(?:\s+(\d+)\s+(\S+))?', line)
         if m:
             base = os.path.basename(m.group(3))
             out.append({"client": m.group(1), "time": m.group(2), "file": m.group(3),
-                        "status": m.group(4),
+                        "status": m.group(4), "bytes_sent": m.group(5) or "",
+                        "request_time": m.group(6) or "",
                         "device": _device_for(base, m.group(1), devices, profiles, leases)})
     return out[-n:]
 
@@ -1453,7 +2561,8 @@ def dhcp_option60_lines(n: int = 100) -> list[str]:
 
 LOG_SOURCES = {
     "dhcp":  lambda: tail(SYSLOG_FILE, 300, grep="dhcpd"),
-    "nginx": lambda: tail(NGINX_ACCESS, 300, grep="/configs/"),
+    "nginx": lambda: [line for line in tail(NGINX_ACCESS, 2000)
+                       if "/configs/" in line or "/ztp/config" in line][-300:],
     "leases": lambda: tail(LEASES_FILE, 400),
 }
 
@@ -1461,13 +2570,15 @@ LOG_SOURCES = {
 @app.route("/logs")
 def logs():
     s = read_settings()
+    full = is_full_ztp(s)
     return render_template("logs.html",
-        dhcp_log="\n".join(LOG_SOURCES["dhcp"]()),
-        option60_log="\n".join(dhcp_option60_lines()),
+        dhcp_log="\n".join(LOG_SOURCES["dhcp"]()) if full else "",
+        option60_log="\n".join(dhcp_option60_lines()) if full else "",
         fetches=nginx_config_fetches(),
-        leases_log="\n".join(LOG_SOURCES["leases"]()),
+        leases_log="\n".join(LOG_SOURCES["leases"]()) if full else "",
         syslog_path=str(SYSLOG_FILE), nginx_path=str(NGINX_ACCESS),
-        leases_path=str(LEASES_FILE), settings=s, author=AUTHOR, version=VERSION)
+        leases_path=str(LEASES_FILE), settings=s, mode=s.get("global_mode", "FULL_ZTP"),
+        author=AUTHOR, version=VERSION)
 
 
 @app.route("/logs/export/<which>")
@@ -1482,7 +2593,8 @@ def logs_export(which):
 
 @app.route("/preview")
 def preview():
-    return app.response_class(generate_dhcpd(), mimetype="text/plain")
+    settings = read_settings()
+    return app.response_class(generate_dhcpd(settings), mimetype="text/plain")
 
 
 @app.route("/configs/<path:fname>")

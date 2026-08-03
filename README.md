@@ -1,7 +1,8 @@
 # ztp-app v4 — vendor-neutral Juniper ZTP over HTTP
 
 GUI (Flask) to drive ZTP on an isolated **L2** segment: upload full configs to Nginx,
-map devices → config, generate/validate `dhcpd.conf`, then verify provisioning.
+map devices → config, generate/validate `dhcpd.conf`, reserve Auto Pool files safely,
+then complete operator verification. Static Mapping remains backward compatible.
 Author: **binh.trinh**.
 
 ## Matching model (method-driven, not model-hardcoded)
@@ -16,8 +17,8 @@ Author: **binh.trinh**.
   flagged if it *enables* `chassis auto-image-upgrade` without a delete).
 - **Delete** uploaded configs (blocked if still referenced).
 - **Import/Export** devices & profiles in CSV + JSON (bulk).
-- **DHCP pool editable in the UI** (server IP / subnet / netmask / range). Default **19.96.0.0/16**
-  (isolated L2 lab). Server IP = Option 66 + gateway.
+- **DHCP pool editable in the UI** (server IP / subnet / netmask / range). Default **192.168.250.0/24**
+  (RFC1918). Server IP = Option 66 + gateway.
 - **SSH credentials in the UI**: a Default plus per-device/site (scope = hostname); also inline in
   the device form. Stored in `creds.json` (chmod 600), passwords never displayed.
 - **Bindings & Health**: binding table + DHCP leases + ping/SSH health. Health targets the
@@ -31,15 +32,21 @@ Author: **binh.trinh**.
 - **Export** the binding/health result (serial → config → status) as CSV.
 - **Logs tab** for troubleshooting: dhcpd activity, nginx **config fetches** (which client pulled which
   config, 200/404), and DHCP leases — each exportable.
+- **Provisioning** supports `FULL_ZTP` and `FILE_SERVER_ONLY`. Per-device/profile assignment is
+  `STATIC`, `AUTO`, or `DHCP_ONLY`; Auto Pool uses `fcntl.flock`, atomic JSON stores and append-only
+  `history.jsonl`. HTTP 200 is `FETCHED`, never automatic completion.
+- Export mapping/history as CSV or XLSX (`openpyxl`). Dynamic Auto Pool delivery uses `/ztp/config`
+  behind the bundled Nginx proxy and checks the active DHCP lease before allocation.
 
 ## Structure
 ```
 ztp-app/
   app.py
-  devices.json            generic_profiles.json
+  devices.json            static_mappings.json  generic_profiles.json
   settings.json           creds.json (0600)
-  uploads/  templates/{index.html, dhcpd.j2, bindings.html}
-  requirements.txt  deploy/{install.sh, ztp-app.service}
+  config_pool.json        assignments.json  results.json  history.jsonl
+  uploads/  templates/{index.html, provisioning.html, dhcpd.j2, bindings.html}
+  requirements.txt  deploy/{install.sh, ztp-app.service, ztp-nginx-site.conf}
 ```
 
 ## Run — dev (WSL, no root)
@@ -116,6 +123,6 @@ DHCP pool and SSH credentials are managed **in the UI** (settings.json / creds.j
 - `~= "<serial>$"` assumes the serial is at the END of Option 60 (`Juniper-<model>-<serial>`).
   Confirm the real VCI with `tcpdump -ni <if> port 67 -v` or the dhcpd log.
 - `~=` is a regex (Ubuntu's isc-dhcp-server has regex support). Serials are alphanumeric → safe.
-- `19.96.0.0/16` is public IANA space, used here only because the segment is isolated L2.
-  Prefer RFC1918 / `100.64.0.0/10` if there is any chance of routing/overlap.
+- The default pool is RFC1918 `192.168.250.0/24`; choose a non-overlapping RFC1918 subnet for the
+  actual ZTP VLAN and never expose the DHCP service to production networks.
 - The app validates `dhcpd -t` before restarting; on failure it does NOT restart and surfaces the error.
