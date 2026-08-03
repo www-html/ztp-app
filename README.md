@@ -1,4 +1,4 @@
-# ztp-app v26.08.08
+# ztp-app v26.08.09
 
 Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP. It runs on an isolated L2 ZTP VLAN; devices receive DHCP, fetch a config over HTTP, and commit it themselves.
 
@@ -38,8 +38,8 @@ The installer creates a Python venv, Nginx, `/var/lib/ztp-app`, and `ztp-app.ser
 2. Refresh interfaces; select Internet and ZTP interfaces. The ZTP interface must be physically linked, have IPv4 equal to Server IP, and differ from Internet.
 3. Suggest the pool using CIDR mask length; verify subnet/ranges and that no other DHCP server shares the L2 segment.
 4. Upload config files. New files are disabled from Auto Pool until metadata is reviewed.
-5. Add a `STATIC` device mapping or an `AUTO` profile. Confirm raw DHCP Option 60 before serial/vendor rules.
-6. Test one device, inspect Logs, then scale out. HTTP 200 alone is not manual completion; verify model, serial, hostname, commit and rollback on the device.
+5. Overview → open **Mapping setup (advanced)** to add a Specific Device or Generic Profile. Confirm raw DHCP Option 60 before serial/vendor rules.
+6. Test one device, inspect Logs, then scale out. HTTP 200 alone is not delivery; only complete bytes promote a file to `DELIVERED`.
 
 ## Development and tests
 
@@ -48,7 +48,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 ZTP_DEV=1 ZTP_WEBROOT=./_webroot ZTP_DHCPD=./_dhcpd.conf python app.py
-python -m unittest -v test_provisioning.py test_three_modes.py
+python -m unittest -v
 ```
 
 The deploy and rollback path is intentionally production-gated: inspect the candidate and the readiness panel before connecting devices.
