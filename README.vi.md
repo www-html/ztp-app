@@ -1,4 +1,4 @@
-# ztp-app v26.08.09 — hướng dẫn vận hành
+# ztp-app v26.08.12 — hướng dẫn vận hành
 
 `ztp-app` là bảng điều khiển Flask cho Juniper ZTP trên một VLAN/L2 cô lập. Thiết bị nhận DHCP, tải file từ Nginx và tự commit. App không SSH để đẩy cấu hình trực tiếp.
 
@@ -29,6 +29,12 @@ sudo BRIDGE_IF=<ztp-interface> deploy/install.sh
 ```
 
 Script tạo venv, cài dependency, Nginx, thư mục bền vững `/var/lib/ztp-app` và systemd service. Runtime JSON/config không bị ghi đè khi cập nhật. DHCP chỉ được enable/start khi operator Apply trong UI (hoặc đặt `APPLY_DHCP_ON_INSTALL=1` khi thật sự cần).
+
+### Chỉ có một laptop Windows 11
+
+Không chạy DHCP production trực tiếp trong WSL2. WSL2/NAT không chuyển ổn định DHCP broadcast Layer-2 vào Ubuntu; có thể Wireshark trên Windows thấy `DHCPDISCOVER` nhưng `dhcpd` trong WSL không thấy gói. Dùng hai NIC: Wi-Fi cho Internet và USB/LAN NIC cho ZTP. Tạo Hyper-V **External Virtual Switch** chỉ gắn với NIC ZTP, sau đó gắn Ubuntu VM vào switch này. Đặt IP tĩnh cho NIC VM trên subnet ZTP và chạy `isc-dhcp-server` trong VM. WSL2 vẫn có thể dùng để phát triển/UI.
+
+Nếu Windows 11 Home không có Hyper-V, dùng VirtualBox với **Bridged Adapter** gắn vào NIC ZTP. Không dùng Wi-Fi sharing, NAT hoặc router ở giữa VM và switch ZTP.
 
 Kiểm tra:
 
@@ -65,4 +71,4 @@ ZTP_DEV=1 ZTP_WEBROOT=./_webroot ZTP_DHCPD=./_dhcpd.conf python app.py
 python -m unittest -v
 ```
 
-Version hiện tại: **26.08.09**.
+Version hiện tại: **26.08.12**.

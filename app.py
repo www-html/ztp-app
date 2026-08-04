@@ -166,7 +166,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.11"   # persistent DHCP candidate and explicit mode actions
+VERSION = "26.08.12"   # persistent DHCP candidate and WSL2 deployment guidance
 
 
 class JsonDataError(RuntimeError):

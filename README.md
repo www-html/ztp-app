@@ -1,4 +1,4 @@
-# ztp-app v26.08.09
+# ztp-app v26.08.12
 
 Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP. It runs on an isolated L2 ZTP VLAN; devices receive DHCP, fetch a config over HTTP, and commit it themselves.
 
@@ -31,6 +31,12 @@ sudo BRIDGE_IF=<ztp-interface> deploy/install.sh
 ```
 
 The installer creates a Python venv, Nginx, `/var/lib/ztp-app`, and `ztp-app.service`. It does not automatically start DHCP when a mode is selected; use the UI Apply action after the interface and pool checks pass.
+
+### One Windows 11 laptop topology
+
+Do not run the production DHCP listener inside WSL2. WSL2/NAT does not reliably deliver Layer-2 DHCP broadcasts to the Linux namespace, so Windows Wireshark may see `DHCPDISCOVER` while `dhcpd` in WSL sees nothing. Use two NICs: Wi-Fi for Internet and a USB/Ethernet NIC for ZTP. Create a Hyper-V **External Virtual Switch** bound only to the ZTP NIC, then attach an Ubuntu VM to that switch. Put the VM's bridged interface on the ZTP subnet and install/run `isc-dhcp-server` there. WSL2 may remain the development/UI environment.
+
+On Windows 11 Home, use VirtualBox with **Bridged Adapter** bound to the ZTP NIC instead of Hyper-V. Do not use Wi-Fi sharing, NAT, or a router between the VM and the ZTP switch.
 
 ## UI workflow
 
