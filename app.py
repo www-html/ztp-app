@@ -166,7 +166,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.13"   # authenticated read-only config viewer
+VERSION = "26.08.14"   # read-only Nginx config directory listing
 
 
 class JsonDataError(RuntimeError):

@@ -1,4 +1,4 @@
-# ztp-app v26.08.13 — hướng dẫn vận hành
+# ztp-app v26.08.14 — hướng dẫn vận hành
 
 `ztp-app` là bảng điều khiển Flask cho Juniper ZTP trên một VLAN/L2 cô lập. Thiết bị nhận DHCP, tải file từ Nginx và tự commit. App không SSH để đẩy cấu hình trực tiếp.
 
@@ -14,7 +14,7 @@
 
 1. **Settings → Operating mode**: chọn mode. Khi vào `FILE_SERVER_ONLY`, xác nhận stop/disable DHCP. Khi vào mode DHCP, chọn **Apply** mới validate candidate và start/enable; chỉ Save thì không tự start.
 2. **Settings → Network**: bấm **Refresh interfaces**, chọn Internet interface và ZTP interface, kiểm tra link/IPv4. Bấm **Suggest pool**, nhập `Mask length` (ví dụ `24`), rà lại Server IP/range và xác nhận không có DHCP server khác cùng L2.
-3. **Config Files**: upload `.conf`/`.txt`. File mới mặc định không vào Auto Pool. Bấm **View** để xem nội dung read-only sau khi đăng nhập; **Download** là URL dành cho thiết bị. Bật Auto Pool tại bảng metadata, rồi khai báo model/group hoặc `Allow any model`.
+3. **Config Files**: upload `.conf`/`.txt`. File mới mặc định không vào Auto Pool. Bấm **View** để xem nội dung read-only sau khi đăng nhập; **Download** là URL dành cho thiết bị. Client trong VLAN ZTP có thể xem danh sách read-only tại `http://<server>/configs/`. Bật Auto Pool tại bảng metadata, rồi khai báo model/group hoặc `Allow any model`.
 4. **Overview → Mapping setup (advanced)**: `STATIC` = file cố định; `AUTO` = resolver chọn file đã opt-in. Serial chỉ dùng khi đã xác nhận serial nằm cuối Option 60; MAC cần DHCP IP khi có reservation.
 5. **Logs**: xem raw Option 60, DHCP lease và structured Nginx fetch. Chỉ response đủ bytes mới chuyển `DELIVERED`/`DOWNLOADED`; HTTP 200 partial là lỗi cần xem lại.
 6. Test một thiết bị trước, sau đó mới mở rộng batch. Không còn bước Health/SSH/manual verification trong workflow chính.
@@ -71,4 +71,4 @@ ZTP_DEV=1 ZTP_WEBROOT=./_webroot ZTP_DHCPD=./_dhcpd.conf python app.py
 python -m unittest -v
 ```
 
-Version hiện tại: **26.08.13**.
+Version hiện tại: **26.08.14**.
