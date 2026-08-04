@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.09.1]
+ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.09.2]
 Author: binh.trinh
 
 Matching (method-driven, not model-hardcoded):
@@ -9,7 +9,7 @@ Matching (method-driven, not model-hardcoded):
   - Generic Profile       -> elsif option vendor-class-identifier ~= "<vendor-class>"
 File-server advertised via Option 66 (tftp-server-name).
 
-v26.09.1: atomic MAC-first project allocation, retry-safe config reuse, allocation
+v26.09.2: atomic MAC-first project allocation, retry-safe config reuse, allocation
 review/release controls, project-aware config access, and CSV/XLSX mapping workflow.
 
 Run:
@@ -171,7 +171,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.09.1"   # EX4100 Vendor Profile pool mapping
+VERSION = "26.09.2"   # manual /ztp/config file access
 
 
 class JsonDataError(RuntimeError):
@@ -282,6 +282,7 @@ def _require_auth():
     while bootstrapping. Auth is skipped under ZTP_DEV=1 for local tests.
     """
     if (DEV_MODE or request.path.startswith("/configs/") or
+            request.path.startswith("/ztp/config/") or
             request.path in {"/ztp/config", "/login"}):
         return None
     if session.get("admin_user"):
@@ -3988,7 +3989,43 @@ def config_directory():
             files.append({"filename": filename, "size": path.stat().st_size})
         except OSError:
             continue
-    return render_template("config_directory.html", files=files, version=VERSION)
+    return render_template("config_directory.html", files=files, version=VERSION,
+                           base_path="/configs")
+
+
+def _manual_config_response(fname: str):
+    """Serve one explicitly named config for operator/manual HTTP loading."""
+    filename = os.path.basename(fname)
+    if filename != fname or not _allowed(filename):
+        return Response("Config file is not allowed.\n", status=404, mimetype="text/plain")
+    path = NGINX_DIR / filename
+    if not path.is_file():
+        return Response("Config file was not found.\n", status=404, mimetype="text/plain")
+    append_history("MANUAL_CONFIG_DOWNLOAD", operator=operator_name(), filename=filename,
+                   ip=request.remote_addr or "", message="Explicit /ztp/config/ download")
+    return send_from_directory(NGINX_DIR, filename,
+                               as_attachment=False,
+                               mimetype="text/plain",
+                               max_age=0)
+
+
+@app.route("/ztp/config/")
+def manual_config_directory():
+    """List configs for an operator that needs to load one manually."""
+    files = []
+    for filename in list_configs():
+        path = NGINX_DIR / filename
+        try:
+            files.append({"filename": filename, "size": path.stat().st_size})
+        except OSError:
+            continue
+    return render_template("config_directory.html", files=files, version=VERSION,
+                           base_path="/ztp/config")
+
+
+@app.route("/ztp/config/<path:fname>")
+def manual_config_file(fname):
+    return _manual_config_response(fname)
 
 
 @app.route("/configs/<path:fname>")

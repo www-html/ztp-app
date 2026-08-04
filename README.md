@@ -1,4 +1,4 @@
-# ztp-app v26.09.1
+# ztp-app v26.09.2
 
 Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP. It runs on an isolated L2 ZTP VLAN; devices receive DHCP, fetch a config over HTTP, and commit it themselves.
 
@@ -51,7 +51,7 @@ On Windows 11 Home, use VirtualBox with **Bridged Adapter** bound to the ZTP NIC
 
 For Vendor ID `Juniper-ex4100-h-12mp-xxx`, create a Generic Profile with `Contains`, `AUTO`, `Option 60 confirmed = Yes`, and allocation pool `OXISANTA_EX4100`. In Config Files, set the same pool name on `OXISANTA_EX4100_PC01.conf`, `OXISANTA_EX4100_PC02.conf`, and the remaining PC files; set their allocation order. EX4100 clients are allocated only from that pool. An empty pool returns `PROFILE_POOL_EMPTY` and never falls back to EX4400 files.
 
-`/configs/` is blocked in `ZTP_PROVISIONING` so devices cannot bypass the resolver. Directory listing remains available in `DHCP_FILE_SERVER` and `FILE_SERVER_ONLY`; authenticated config viewing remains available in the application UI.
+`/configs/` is blocked in `ZTP_PROVISIONING` so devices cannot bypass the resolver. For an explicit manual load, use `/ztp/config/` to list files or `/ztp/config/<filename>` to download one file; the exact `/ztp/config` URL remains the automatic resolver. Directory listing also remains available in `DHCP_FILE_SERVER` and `FILE_SERVER_ONLY`.
 
 ## State migration
 

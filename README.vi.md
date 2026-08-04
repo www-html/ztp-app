@@ -1,4 +1,4 @@
-# ztp-app v26.09.1 — hướng dẫn vận hành
+# ztp-app v26.09.2 — hướng dẫn vận hành
 
 `ztp-app` là bảng điều khiển Flask cho Juniper ZTP trên một VLAN/L2 cô lập. Thiết bị nhận DHCP, tải file từ Nginx và tự commit. App không SSH để đẩy cấu hình trực tiếp.
 
@@ -31,7 +31,7 @@ Trong **Overview → Mapping setup (advanced) → Generic Profile**, tạo profi
 
 Trong **Config Files**, đặt `Pool name` của từng file `OXISANTA_EX4100_PC01.conf`, `OXISANTA_EX4100_PC02.conf`, ... thành `OXISANTA_EX4100` và đặt `Order` theo thứ tự cấp phát. EX4100 chỉ lấy file `AVAILABLE` trong pool này; nếu pool rỗng app dừng với `PROFILE_POOL_EMPTY`, không fallback sang EX4400.
 
-Trong `ZTP_PROVISIONING`, `/configs/` bị chặn để client không bypass resolver. Directory listing chỉ hoạt động trong `DHCP_FILE_SERVER` và `FILE_SERVER_ONLY`. Specific Device/Generic Profile vẫn không làm thay đổi identity MAC-first; Generic Profile `AUTO` có thể giới hạn allocation vào `Pool name` tương ứng.
+Trong `ZTP_PROVISIONING`, `/configs/` bị chặn để client không bypass resolver. Nếu cần load thủ công, mở `/ztp/config/` để xem danh sách hoặc `/ztp/config/<filename>` để tải đúng một file; URL chính xác `/ztp/config` vẫn là resolver tự động cho thiết bị. Specific Device/Generic Profile vẫn không làm thay đổi identity MAC-first; Generic Profile `AUTO` có thể giới hạn allocation vào `Pool name` tương ứng.
 
 ## State và migration v26.09
 
@@ -106,4 +106,4 @@ sudo systemctl is-active ztp-app.service nginx
 
 Rollback source: checkout commit trước, chạy lại installer; state/runtime vẫn giữ nguyên. Trước rollback nên dùng **Export all data**.
 
-Version hiện tại: **26.09.1**.
+Version hiện tại: **26.09.2**.

@@ -289,6 +289,19 @@ class ProjectAllocationTests(unittest.TestCase):
         client = app.app.test_client()
         self.assertEqual(403, client.get("/configs/").status_code)
 
+    def test_manual_ztp_path_lists_and_serves_explicit_file(self):
+        self.add_configs(1)
+        client = app.app.test_client()
+        listing = client.get("/ztp/config/")
+        self.assertEqual(200, listing.status_code)
+        self.assertIn(b"switch-001.conf", listing.data)
+        download = client.get("/ztp/config/switch-001.conf")
+        self.assertEqual(200, download.status_code)
+        self.assertIn(b"root-authentication", download.data)
+        download.close()
+        self.assertEqual({}, app.read_provisioning_state()["devices"])
+        self.assertNotEqual(200, client.get("/ztp/config/../config_pool.json").status_code)
+
     def test_configs_directory_works_in_dhcp_file_server_mode(self):
         self.add_configs(1)
         client = app.app.test_client()
