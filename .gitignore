@@ -12,6 +12,10 @@ config_pool.json
 assignments.json
 results.json
 history.jsonl
+download_records.json
+parser_cursors.json
+download_records.json.*
+parser_cursors.json.*
 .allocation.lock
 .history.lock
 uploads/*

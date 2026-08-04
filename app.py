@@ -414,6 +414,23 @@ def profile_match_expression(profile: dict) -> str:
     return re.escape(value)
 
 
+def profiles_matching_vendor(vendor: str, profiles=None) -> list[dict]:
+    """Return Generic Profiles matching one raw DHCP Option 60 value."""
+    vendor = str(vendor or "").strip()
+    if not vendor:
+        return []
+    profiles = read_profiles() if profiles is None else profiles
+    matched = []
+    for profile in profiles:
+        expression = profile_match_expression(profile)
+        try:
+            if re.search(expression, vendor, re.I):
+                matched.append(profile)
+        except re.error:
+            continue
+    return matched
+
+
 def mapping_issues(devices=None, profiles=None) -> list[str]:
     """Return deterministic warnings for ambiguous or malformed multi-device rules."""
     devices = read_devices() if devices is None else devices
@@ -1744,14 +1761,7 @@ def find_request_context(client_ip: str) -> tuple[dict | None, dict | None, dict
         return None, None, lease, "AMBIGUOUS_MAPPING"
     row = matched[0] if matched else None
     profiles = read_profiles()
-    matched_profiles = []
-    for profile in profiles:
-        expression = profile_match_expression(profile)
-        try:
-            if vendor and re.search(expression, vendor, re.I):
-                matched_profiles.append(profile)
-        except re.error:
-            continue
+    matched_profiles = profiles_matching_vendor(vendor, profiles)
     if len(matched_profiles) > 1:
         return row, None, lease, "AMBIGUOUS_PROFILE"
     return row, (matched_profiles[0] if matched_profiles else None), lease, "OK"
@@ -2049,12 +2059,27 @@ def release_review_config(filename: str, *, operator: str = "operator") -> tuple
     return True, f"{filename} returned to AVAILABLE after review."
 
 
-def reserve_project_assignment(client_ip: str, lease: dict) -> tuple[dict | None, str]:
-    """MAC-first transaction: update one device and one config owner atomically."""
+def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None = None,
+                               profile: dict | None = None) -> tuple[dict | None, str]:
+    """MAC-first transaction with optional Vendor Profile pool filtering."""
     mac = normalize_mac(lease.get("mac", ""))
     if not mac:
         return None, "MAC_REQUIRED"
     key = f"mac:{mac}"
+    if row is None:
+        devices = read_devices()
+        matches = [item for item in devices if _row_matches_lease(item, client_ip, lease)]
+        if len(matches) > 1:
+            return None, "AMBIGUOUS_MAPPING"
+        row = matches[0] if matches else None
+    if profile is None:
+        vendor = str(lease.get("option60", "") or option60_for_client(client_ip)).strip()
+        matched_profiles = profiles_matching_vendor(vendor)
+        if len(matched_profiles) > 1:
+            return None, "AMBIGUOUS_PROFILE"
+        profile = matched_profiles[0] if matched_profiles else None
+    allocation_source = profile or row or {}
+    wanted_pool = str(allocation_source.get("pool_name") or "").strip()
     sync_config_pool()
     history = []
     with _exclusive_lock(ALLOCATION_LOCK):
@@ -2097,11 +2122,13 @@ def reserve_project_assignment(client_ip: str, lease: dict) -> tuple[dict | None
                 history.append((reason, key, {"ip": client_ip}))
             else:
                 candidates = [(filename, meta) for filename, meta in configs.items()
-                              if meta.get("status") == "AVAILABLE"]
+                              if meta.get("status") == "AVAILABLE"
+                              and (not wanted_pool or str(meta.get("pool_name") or "").strip() == wanted_pool)]
                 candidates.sort(key=lambda item: (int(item[1].get("allocation_order", 0) or 0), item[0]))
                 if not candidates:
                     result, reason = None, "CONFIG_POOL_EMPTY"
-                    history.append(("CONFIG_POOL_EMPTY", key, {"ip": client_ip}))
+                    reason = "PROFILE_POOL_EMPTY" if wanted_pool else reason
+                    history.append((reason, key, {"ip": client_ip, "pool_name": wanted_pool}))
                 else:
                     filename, meta = candidates[0]
                     path = NGINX_DIR / filename
@@ -2132,6 +2159,9 @@ def reserve_project_assignment(client_ip: str, lease: dict) -> tuple[dict | None
                             "fetch_count": 0, "fetch_times": [], "retry_count": 0,
                             "last_http_status": "", "expected_bytes": path.stat().st_size,
                             "actual_bytes": 0, "last_error": "", "remarks": device.get("remarks", ""),
+                            "profile_label": (profile or {}).get("label", ""),
+                            "profile_vendor_class": (profile or {}).get("vendor_class", ""),
+                            "pool_name": wanted_pool,
                         })
                         devices[key] = device
                         meta.update({"status": "ASSIGNED", "assigned_device": key, "updated_at": now})

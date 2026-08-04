@@ -14,12 +14,24 @@
 
 1. **Settings → Operating mode**: chọn mode. Khi vào `FILE_SERVER_ONLY`, xác nhận stop/disable DHCP. Khi vào mode DHCP, chọn **Apply** mới validate candidate và start/enable; chỉ Save thì không tự start.
 2. **Settings → Network**: bấm **Refresh interfaces**, chọn Internet interface và ZTP interface, kiểm tra link/IPv4. Bấm **Suggest pool**, nhập `Mask length` (ví dụ `24`), rà lại Server IP/range và xác nhận không có DHCP server khác cùng L2.
-3. **Config Files**: upload các config đã chuẩn bị, kiểm tra checksum và `allocation_order`. File `AVAILABLE` mới được cấp; `ASSIGNED`, `DELIVERED`, `VERIFIED` và `REVIEW_REQUIRED` được bảo vệ.
+3. **Config Files**: upload các config đã chuẩn bị, kiểm tra checksum và `allocation_order`. Với nhóm EX4100, đặt `Pool name` của các file `OXISANTA_EX4100_PCxx` là `OXISANTA_EX4100`. File `AVAILABLE` mới trong đúng pool sẽ được cấp; `ASSIGNED`, `DELIVERED`, `VERIFIED` và `REVIEW_REQUIRED` được bảo vệ.
 4. **Overview → Project control**: đặt số thiết bị dự kiến, xử lý các activation check, rồi chuyển project sang `ACTIVE`. `PAUSED` chặn MAC mới nhưng vẫn cho thiết bị đã assignment tải lại file cũ.
 5. **Recent provisioning clients**: filter theo state, MAC/serial/config/IP/thời gian. Dùng **Verify** sau khi xác nhận thiết bị đã load/commit đúng; **Archive** chỉ ẩn khỏi recent UI và không xóa báo cáo.
 6. **Logs**: xem 200 audit event gần nhất và raw log khi troubleshooting. Chỉ response đủ bytes mới chuyển `DELIVERED`; HTTP 200 partial không được coi là thành công.
 
-Trong `ZTP_PROVISIONING`, `/configs/` bị chặn để client không bypass resolver. Directory listing chỉ hoạt động trong `DHCP_FILE_SERVER` và `FILE_SERVER_ONLY`. Phần Specific Device/Generic Profile cũ chỉ giữ cho backward compatibility và eligibility metadata; không quyết định file trong project MAC-first.
+### Gắn Vendor ID EX4100 vào pool OXISANTA
+
+Trong **Overview → Mapping setup (advanced) → Generic Profile**, tạo profile:
+
+- Vendor Option 60: `Juniper-ex4100-h-12mp-xxx`
+- Match: `Contains`
+- Assignment: `AUTO`
+- Allocation pool: `OXISANTA_EX4100`
+- Option 60 confirmed: `Yes`
+
+Trong **Config Files**, đặt `Pool name` của từng file `OXISANTA_EX4100_PC01.conf`, `OXISANTA_EX4100_PC02.conf`, ... thành `OXISANTA_EX4100` và đặt `Order` theo thứ tự cấp phát. EX4100 chỉ lấy file `AVAILABLE` trong pool này; nếu pool rỗng app dừng với `PROFILE_POOL_EMPTY`, không fallback sang EX4400.
+
+Trong `ZTP_PROVISIONING`, `/configs/` bị chặn để client không bypass resolver. Directory listing chỉ hoạt động trong `DHCP_FILE_SERVER` và `FILE_SERVER_ONLY`. Specific Device/Generic Profile vẫn không làm thay đổi identity MAC-first; Generic Profile `AUTO` có thể giới hạn allocation vào `Pool name` tương ứng.
 
 ## State và migration v26.09
 

@@ -228,6 +228,62 @@ class ProjectAllocationTests(unittest.TestCase):
         assigned = [self.reserve(index, option60="Juniper-ex4100")[0]["config"] for index in range(3)]
         self.assertEqual(3, len(set(assigned)))
 
+    def test_vendor_profile_allocates_only_from_named_pool(self):
+        state = app._default_provisioning_state()
+        state["project"].update({"name": "ex-rollout", "status": "ACTIVE",
+                                  "expected_devices": 0, "next_sequence": 1})
+        entries = [
+            ("OXISANTA_EX4100_PC01.conf", "OXISANTA_EX4100"),
+            ("OXISANTA_EX4100_PC02.conf", "OXISANTA_EX4100"),
+            ("OXISANTA_EX4400_PC01.conf", "OXISANTA_EX4400"),
+        ]
+        for order, (filename, pool_name) in enumerate(entries, start=1):
+            path = app.NGINX_DIR / filename
+            path.write_text(VALID_CONFIG, encoding="utf-8")
+            state["configs"][filename] = {
+                "status": "AVAILABLE", "checksum": app.config_sha256(path),
+                "allocation_order": order, "assigned_device": "", "pool_name": pool_name,
+                "file_size": path.stat().st_size,
+            }
+        app.commit_provisioning_state(state)
+        profile = {"label": "EX4100 OXISANTA", "vendor_class": "Juniper-ex4100-h-12mp-xxx",
+                   "match_mode": "contains", "assignment_type": "AUTO",
+                   "pool_name": "OXISANTA_EX4100", "option60_confirmed": "yes"}
+        app.PROFILES_JSON.write_text(
+            '[{"label":"EX4100 OXISANTA","vendor_class":"Juniper-ex4100-h-12mp-xxx",'
+            '"match_mode":"contains","assignment_type":"AUTO",'
+            '"pool_name":"OXISANTA_EX4100","option60_confirmed":"yes"}]',
+            encoding="utf-8")
+        app.SYSLOG_FILE.write_text(
+            'dhcpd vendor-class-identifier "Juniper-ex4100-h-12mp-xxx" 192.168.250.20',
+            encoding="utf-8")
+        first_lease = self.lease(1, option60="")
+        second_lease = self.lease(2, option60="")
+        first, first_error = app.reserve_project_assignment(
+            "192.168.250.20", first_lease)
+        second, second_error = app.reserve_project_assignment(
+            "192.168.250.21", second_lease, profile=profile)
+        self.assertFalse(first_error)
+        self.assertFalse(second_error)
+        self.assertEqual("OXISANTA_EX4100_PC01.conf", first["config"])
+        self.assertEqual("OXISANTA_EX4100_PC02.conf", second["config"])
+        self.assertEqual("OXISANTA_EX4100", first["pool_name"])
+        self.assertNotIn("OXISANTA_EX4400", {first["config"], second["config"]})
+
+    def test_vendor_profile_pool_empty_does_not_fallback_to_other_model(self):
+        self.add_configs(1)
+        profile = {"label": "EX4100 OXISANTA", "vendor_class": "Juniper-ex4100-h-12mp-xxx",
+                   "match_mode": "contains", "assignment_type": "AUTO",
+                   "pool_name": "OXISANTA_EX4100", "option60_confirmed": "yes"}
+        state = app.read_provisioning_state()
+        only_file = next(iter(state["configs"].values()))
+        only_file["pool_name"] = "OXISANTA_EX4400"
+        app.commit_provisioning_state(state)
+        assigned, error = app.reserve_project_assignment(
+            "192.168.250.20", self.lease(1, option60=profile["vendor_class"]), profile=profile)
+        self.assertIsNone(assigned)
+        self.assertEqual("PROFILE_POOL_EMPTY", error)
+
     def test_configs_directory_is_blocked_in_ztp_mode(self):
         self.add_configs(1)
         client = app.app.test_client()
