@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.09.0]
+ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.09.1]
 Author: binh.trinh
 
 Matching (method-driven, not model-hardcoded):
@@ -9,7 +9,7 @@ Matching (method-driven, not model-hardcoded):
   - Generic Profile       -> elsif option vendor-class-identifier ~= "<vendor-class>"
 File-server advertised via Option 66 (tftp-server-name).
 
-v26.09.0: atomic MAC-first project allocation, retry-safe config reuse, allocation
+v26.09.1: atomic MAC-first project allocation, retry-safe config reuse, allocation
 review/release controls, project-aware config access, and CSV/XLSX mapping workflow.
 
 Run:

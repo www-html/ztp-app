@@ -1,4 +1,4 @@
-# ztp-app v26.09.0
+# ztp-app v26.09.1
 
 Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP. It runs on an isolated L2 ZTP VLAN; devices receive DHCP, fetch a config over HTTP, and commit it themselves.
 

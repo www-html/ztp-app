@@ -1,4 +1,4 @@
-# ztp-app v26.09.0 — hướng dẫn vận hành
+# ztp-app v26.09.1 — hướng dẫn vận hành
 
 `ztp-app` là bảng điều khiển Flask cho Juniper ZTP trên một VLAN/L2 cô lập. Thiết bị nhận DHCP, tải file từ Nginx và tự commit. App không SSH để đẩy cấu hình trực tiếp.
 
@@ -106,4 +106,4 @@ sudo systemctl is-active ztp-app.service nginx
 
 Rollback source: checkout commit trước, chạy lại installer; state/runtime vẫn giữ nguyên. Trước rollback nên dùng **Export all data**.
 
-Version hiện tại: **26.09.0**.
+Version hiện tại: **26.09.1**.
