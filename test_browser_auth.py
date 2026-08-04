@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import app as ztp
 
@@ -53,3 +54,45 @@ class BrowserAuthTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SettingsPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old_settings = ztp.SETTINGS_JSON
+        ztp.SETTINGS_JSON = Path(self.temp.name) / "settings.json"
+        ztp.write_settings({
+            **ztp.DEFAULT_SETTINGS,
+            "active_mode": "DHCP_FILE_SERVER",
+            "operating_mode": "DHCP_FILE_SERVER",
+            "pending_mode": "ZTP_PROVISIONING",
+        })
+        ztp.app.config.update(TESTING=True)
+        self.client = ztp.app.test_client()
+
+    def tearDown(self):
+        ztp.SETTINGS_JSON = self.old_settings
+        self.temp.cleanup()
+
+    @patch.object(ztp, "network_checks", return_value=[])
+    @patch.object(ztp, "deploy_dhcpd", return_value=(False, "interface not ready"))
+    def test_failed_apply_keeps_network_candidate_and_modes(self, _deploy, _checks):
+        response = self.client.post("/settings", data={
+            "internet_interface": "eth8",
+            "ztp_interface": "eth1",
+            "server_ip": "192.168.240.2",
+            "gateway": "",
+            "subnet": "192.168.240.0",
+            "prefix_length": "24",
+            "range_low": "192.168.240.50",
+            "range_high": "192.168.240.200",
+            "lease_time": "600",
+            "dns_servers": "",
+            "confirm_dhcp": "yes",
+            "save_mode": "apply",
+        })
+        self.assertEqual(response.status_code, 302)
+        saved = ztp.read_settings()
+        self.assertEqual(saved["server_ip"], "192.168.240.2")
+        self.assertEqual(saved["active_mode"], "DHCP_FILE_SERVER")
+        self.assertEqual(saved["pending_mode"], "ZTP_PROVISIONING")

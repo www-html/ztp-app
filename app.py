@@ -166,7 +166,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.10"   # browser-compatible session login
+VERSION = "26.08.11"   # persistent DHCP candidate and explicit mode actions
 
 
 class JsonDataError(RuntimeError):
@@ -2368,9 +2368,11 @@ def provisioning_mode():
     if mode == old:
         flash(f"Mode is already {mode}.", "info")
         return redirect(url_for("index", view="settings"))
+    action = request.form.get("mode_action", "")
+    apply_requested = action == "apply" or request.form.get("apply_mode") == "yes"
     ok, message = _apply_operating_mode(mode, settings=settings,
                                         confirm=request.form.get("confirm_mode") == "yes",
-                                        apply=request.form.get("apply_mode") == "yes")
+                                        apply=apply_requested)
     flash(message, "success" if ok else "warning")
     return redirect(url_for("index", view="settings"))
 
@@ -2588,14 +2590,17 @@ def service_restart():
 
 @app.route("/settings", methods=["POST"])
 def settings_save():
-    s = {k: request.form.get(k, "").strip() for k in SETTINGS_FIELDS}
     current = read_settings()
+    # Start from the complete persisted object so a network edit cannot reset
+    # active_mode/pending_mode or unrelated settings fields.
+    s = dict(current)
     clearable = {"gateway", "internet_interface", "ztp_interface", "dns_servers"}
     for key in SETTINGS_FIELDS:
-        if key in clearable and key in request.form:
+        if key not in request.form:
             continue
-        if not s.get(key):
-            s[key] = current.get(key, DEFAULT_SETTINGS.get(key, ""))
+        value = request.form.get(key, "").strip()
+        if value or key in clearable:
+            s[key] = value
     prefix = request.form.get("prefix_length", "").strip()
     if prefix:
         try:
@@ -2618,9 +2623,10 @@ def settings_save():
     write_settings(s)
     ok, msg = deploy_dhcpd(generate_dhcpd())
     if not ok:
-        # Keep the last known-good runtime settings aligned with the rolled
-        # back DHCP candidate; the operator can still save a draft explicitly.
-        write_settings(current)
+        # deploy_dhcpd() rolls back the runtime candidate itself. Keep the
+        # operator's desired settings so the UI does not silently discard IPs
+        # while a link/service readiness problem is being corrected.
+        msg = "Settings saved; running DHCP remains unchanged. " + msg
     checks = network_checks(s) if is_dhcp_mode(s) else []
     if checks:
         # deploy_dhcpd() includes readiness errors in its message when the
