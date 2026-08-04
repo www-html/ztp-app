@@ -51,6 +51,20 @@ class BrowserAuthTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["Location"], "/?view=overview")
 
+    def test_config_view_is_read_only_and_bounded(self):
+        old_webroot = ztp.NGINX_DIR
+        try:
+            ztp.NGINX_DIR = Path(self.temp.name) / "configs"
+            ztp.NGINX_DIR.mkdir()
+            (ztp.NGINX_DIR / "sample.conf.txt").write_text("set system host-name sample;\n")
+            self.client.post("/login", data={"username": "operator", "password": "correct-password", "next": "/"})
+            response = self.client.get("/config-view/sample.conf.txt")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("set system host-name sample", response.get_data(as_text=True))
+            self.assertEqual(self.client.get("/config-view/../admin_auth.json").status_code, 404)
+        finally:
+            ztp.NGINX_DIR = old_webroot
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-# ztp-app v26.08.12
+# ztp-app v26.08.13
 
 Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP. It runs on an isolated L2 ZTP VLAN; devices receive DHCP, fetch a config over HTTP, and commit it themselves.
 
@@ -43,7 +43,7 @@ On Windows 11 Home, use VirtualBox with **Bridged Adapter** bound to the ZTP NIC
 1. Settings → choose mode. Entering `FILE_SERVER_ONLY` requires confirmation to stop/disable DHCP. Entering a DHCP mode is saved without starting until Apply.
 2. Refresh interfaces; select Internet and ZTP interfaces. The ZTP interface must be physically linked, have IPv4 equal to Server IP, and differ from Internet.
 3. Suggest the pool using CIDR mask length; verify subnet/ranges and that no other DHCP server shares the L2 segment.
-4. Upload config files. New files are disabled from Auto Pool until metadata is reviewed.
+4. Upload config files. New files are disabled from Auto Pool until metadata is reviewed. Use **View** for an authenticated read-only preview, or **Download** for the device URL.
 5. Overview → open **Mapping setup (advanced)** to add a Specific Device or Generic Profile. Confirm raw DHCP Option 60 before serial/vendor rules.
 6. Test one device, inspect Logs, then scale out. HTTP 200 alone is not delivery; only complete bytes promote a file to `DELIVERED`.
 

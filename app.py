@@ -166,7 +166,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.12"   # persistent DHCP candidate and WSL2 deployment guidance
+VERSION = "26.08.13"   # authenticated read-only config viewer
 
 
 class JsonDataError(RuntimeError):
@@ -3461,6 +3461,27 @@ def logs_export(which):
 def preview():
     settings = read_settings()
     return app.response_class(generate_dhcpd(settings), mimetype="text/plain")
+
+
+@app.route("/config-view/<path:fname>")
+def config_view(fname):
+    """Show a bounded, authenticated read-only view of a deployed config file."""
+    filename = os.path.basename(fname)
+    if filename != fname or not _allowed(filename):
+        return Response("Config file is not allowed.\n", status=404, mimetype="text/plain")
+    path = NGINX_DIR / filename
+    if not path.is_file():
+        return Response("Config file was not found.\n", status=404, mimetype="text/plain")
+    try:
+        size = path.stat().st_size
+        if size > 512 * 1024:
+            return Response("Config file is too large to view in the browser; use Download.\n",
+                            status=413, mimetype="text/plain")
+        body = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return Response(f"Config file could not be read: {exc}\n", status=500, mimetype="text/plain")
+    return render_template("config_view.html", filename=filename, content=body,
+                           size=size, version=VERSION)
 
 
 @app.route("/configs/<path:fname>")
