@@ -16,7 +16,7 @@ Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP
 
 - DHCP candidate is generated, checked with `dhcpd -t`, backed up, atomically installed, and rolled back if restart fails. DHCP deployment restarts only `isc-dhcp-server`; Nginx is not restarted.
 - Canonical project, device assignment, and config ownership live in `/var/lib/ztp-app/provisioning_state.json` and commit under one global lock with temp + `fsync` + `os.replace()`.
-- The resolver uses normalized MAC as its identity. It does not select a file by serial, model, Option 60, static profile, or syslog; existing assignments are always reused.
+- The resolver uses normalized MAC as its identity. A matched Generic Profile may restrict a new MAC to one named allocation pool; existing assignments are always reused.
 - Config uploads are checksum-aware (`ADDED`, `UPDATED`, `UNCHANGED`, `PROTECTED`, `FAILED`). Reserved/fetching/delivered/active files cannot be overwritten or deleted.
 - ZTP delivery is promoted only after structured Nginx reconciliation proves a complete response. Partial 200 and HTTP errors remain visible failures; cursors survive log rotation.
 - Export/import ZIP has a manifest and checksums and excludes credentials, admin hashes, and the Flask secret. Import validates and backs up before atomic restore; it never starts DHCP.
@@ -46,6 +46,10 @@ On Windows 11 Home, use VirtualBox with **Bridged Adapter** bound to the ZTP NIC
 4. Upload and validate the ordered config pool. Set the expected project size, resolve activation checks, and change the project to `ACTIVE`.
 5. Use the recent client view for operations and CSV/XLSX for the full persistent mapping. Archive never deletes history; delivered reset requires review and a separate config release.
 6. Test two or three devices, verify unique MAC-to-file ownership and complete-byte delivery, then scale out.
+
+### EX4100 OXISANTA pool mapping
+
+For Vendor ID `Juniper-ex4100-h-12mp-xxx`, create a Generic Profile with `Contains`, `AUTO`, `Option 60 confirmed = Yes`, and allocation pool `OXISANTA_EX4100`. In Config Files, set the same pool name on `OXISANTA_EX4100_PC01.conf`, `OXISANTA_EX4100_PC02.conf`, and the remaining PC files; set their allocation order. EX4100 clients are allocated only from that pool. An empty pool returns `PROFILE_POOL_EMPTY` and never falls back to EX4400 files.
 
 `/configs/` is blocked in `ZTP_PROVISIONING` so devices cannot bypass the resolver. Directory listing remains available in `DHCP_FILE_SERVER` and `FILE_SERVER_ONLY`; authenticated config viewing remains available in the application UI.
 
