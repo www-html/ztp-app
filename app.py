@@ -171,7 +171,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.09.0"   # atomic MAC-first project provisioning
+VERSION = "26.09.1"   # EX4100 Vendor Profile pool mapping
 
 
 class JsonDataError(RuntimeError):
