@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Config files · ZTP Manager</title><style>
+body{margin:0;background:#f5f7fa;color:#172b4d;font:14px/1.45 Inter,Segoe UI,Arial,sans-serif}.wrap{max-width:900px;margin:40px auto;padding:0 20px}h1{color:#102a43}.panel{background:#fff;border:1px solid #d8e0ea;border-radius:8px;padding:18px}a{color:#185abd;text-decoration:none}.row{display:flex;justify-content:space-between;gap:16px;padding:10px;border-bottom:1px solid #edf1f5}.row:last-child{border:0}.muted{color:#667085;font-size:12px}
+</style></head><body><main class="wrap"><h1>Config files</h1><p class="muted">Read-only downloads for DHCP_FILE_SERVER and FILE_SERVER_ONLY clients.</p><section class="panel">{% for item in files %}<div class="row"><a href="/configs/{{ item.filename }}">{{ item.filename }}</a><span class="muted">{{ item.size }} bytes</span></div>{% else %}<p>No config files available.</p>{% endfor %}</section><p class="muted">ztp-app {{ version }}</p></main></body></html>

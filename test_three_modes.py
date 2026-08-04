@@ -16,7 +16,7 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.old = {name: getattr(app, name) for name in (
             "DATA_DIR", "NGINX_DIR", "UPLOAD_DIR", "DEVICES_JSON", "STATIC_MAPPINGS_JSON",
-            "PROFILES_JSON", "SETTINGS_JSON", "CREDS_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON",
+            "PROFILES_JSON", "SETTINGS_JSON", "CREDS_JSON", "PROVISIONING_STATE_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON",
             "RESULTS_JSON", "HISTORY_JSONL", "DEVICE_RUNTIME_JSON", "DOWNLOAD_RECORDS_JSON",
             "PARSER_CURSORS_JSON", "ALLOCATION_LOCK", "HISTORY_LOCK", "LEASES_FILE", "SYSLOG_FILE",
             "NGINX_ACCESS", "DEV_MODE")}
@@ -24,7 +24,7 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
         app.NGINX_DIR = root / "configs"; app.NGINX_DIR.mkdir()
         app.UPLOAD_DIR = root / "uploads"; app.UPLOAD_DIR.mkdir()
         for name in ("DEVICES_JSON", "STATIC_MAPPINGS_JSON", "PROFILES_JSON", "SETTINGS_JSON", "CREDS_JSON",
-                     "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON", "RESULTS_JSON", "HISTORY_JSONL",
+                     "PROVISIONING_STATE_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON", "RESULTS_JSON", "HISTORY_JSONL",
                      "DEVICE_RUNTIME_JSON", "DOWNLOAD_RECORDS_JSON", "PARSER_CURSORS_JSON"):
             setattr(app, name, app.DATA_DIR / Path(getattr(app, name)).name)
         app.ALLOCATION_LOCK = app.DATA_DIR / "allocation.lock"
@@ -81,9 +81,12 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
         app.LEASES_FILE.write_text("lease 192.168.250.10 { hardware ethernet aa:bb:cc:dd:ee:02; binding state active; }")
         app.DEVICES_JSON.write_text(json.dumps([{"match_method": "mac", "mac_address": "aa:bb:cc:dd:ee:02",
                                                   "hostname": "legacy", "assignment_type": "DHCP_ONLY"}]))
+        state = app.read_provisioning_state()
+        state["project"].update({"status": "ACTIVE", "expected_devices": 0})
+        app.commit_provisioning_state(state)
         body, detail, status = app.dynamic_config_result("192.168.250.10")
         self.assertIsNone(body)
-        self.assertEqual((detail, status), ("LEGACY_DHCP_ONLY", 204))
+        self.assertEqual((detail, status), ("CONFIG_POOL_EMPTY", 409))
         self.assertEqual(app.read_assignments(), {})
 
     def test_nginx_reconciliation_promotes_only_complete_download(self):

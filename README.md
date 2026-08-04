@@ -1,4 +1,4 @@
-# ztp-app v26.08.14
+# ztp-app v26.09.0
 
 Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP. It runs on an isolated L2 ZTP VLAN; devices receive DHCP, fetch a config over HTTP, and commit it themselves.
 
@@ -6,7 +6,7 @@ Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP
 
 | Mode | DHCP | Resolver | Intended use |
 |---|---|---|---|
-| `ZTP_PROVISIONING` | network + ZTP options | `/ztp/config` | full provisioning; `STATIC` or opt-in `AUTO` |
+| `ZTP_PROVISIONING` | network + ZTP options | `/ztp/config` | MAC-first ordered project allocation |
 | `DHCP_FILE_SERVER` | network parameters only | none | DHCP plus manual `/configs/<file>` downloads |
 | `FILE_SERVER_ONLY` | disabled/stopped | none | Nginx/Flask file server only |
 
@@ -15,8 +15,8 @@ Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP
 ## Safety guarantees
 
 - DHCP candidate is generated, checked with `dhcpd -t`, backed up, atomically installed, and rolled back if restart fails. DHCP deployment restarts only `isc-dhcp-server`; Nginx is not restarted.
-- Persistent state lives in `/var/lib/ztp-app`; legacy app-directory JSON is migrated once. JSON writes use temp + `fsync` + `os.replace()` and backups.
-- `STATIC` is exact and never falls back. `AUTO` requires `auto_pool_enabled=true` plus exact model/group or explicit `allow_any_model=true`. Unknown/mismatch/metadata errors are visible.
+- Canonical project, device assignment, and config ownership live in `/var/lib/ztp-app/provisioning_state.json` and commit under one global lock with temp + `fsync` + `os.replace()`.
+- The resolver uses normalized MAC as its identity. It does not select a file by serial, model, Option 60, static profile, or syslog; existing assignments are always reused.
 - Config uploads are checksum-aware (`ADDED`, `UPDATED`, `UNCHANGED`, `PROTECTED`, `FAILED`). Reserved/fetching/delivered/active files cannot be overwritten or deleted.
 - ZTP delivery is promoted only after structured Nginx reconciliation proves a complete response. Partial 200 and HTTP errors remain visible failures; cursors survive log rotation.
 - Export/import ZIP has a manifest and checksums and excludes credentials, admin hashes, and the Flask secret. Import validates and backs up before atomic restore; it never starts DHCP.
@@ -43,9 +43,15 @@ On Windows 11 Home, use VirtualBox with **Bridged Adapter** bound to the ZTP NIC
 1. Settings → choose mode. Entering `FILE_SERVER_ONLY` requires confirmation to stop/disable DHCP. Entering a DHCP mode is saved without starting until Apply.
 2. Refresh interfaces; select Internet and ZTP interfaces. The ZTP interface must be physically linked, have IPv4 equal to Server IP, and differ from Internet.
 3. Suggest the pool using CIDR mask length; verify subnet/ranges and that no other DHCP server shares the L2 segment.
-4. Upload config files. New files are disabled from Auto Pool until metadata is reviewed. Use **View** for an authenticated read-only preview, or **Download** for the device URL. `http://<server>/configs/` is a read-only Nginx directory listing for clients on the isolated ZTP L2 segment.
-5. Overview → open **Mapping setup (advanced)** to add a Specific Device or Generic Profile. Confirm raw DHCP Option 60 before serial/vendor rules.
-6. Test one device, inspect Logs, then scale out. HTTP 200 alone is not delivery; only complete bytes promote a file to `DELIVERED`.
+4. Upload and validate the ordered config pool. Set the expected project size, resolve activation checks, and change the project to `ACTIVE`.
+5. Use the recent client view for operations and CSV/XLSX for the full persistent mapping. Archive never deletes history; delivered reset requires review and a separate config release.
+6. Test two or three devices, verify unique MAC-to-file ownership and complete-byte delivery, then scale out.
+
+`/configs/` is blocked in `ZTP_PROVISIONING` so devices cannot bypass the resolver. Directory listing remains available in `DHCP_FILE_SERVER` and `FILE_SERVER_ONLY`; authenticated config viewing remains available in the application UI.
+
+## State migration
+
+On first startup, legacy `assignments.json` and `config_pool.json` are backed up under `migration-backup-provisioning-v1` and migrated idempotently. Legacy files remain as compatibility snapshots. Migrated/new projects start `PAUSED` and preserve existing assignments until an operator activates the project.
 
 ## Development and tests
 

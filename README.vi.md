@@ -1,10 +1,10 @@
-# ztp-app v26.08.14 — hướng dẫn vận hành
+# ztp-app v26.09.0 — hướng dẫn vận hành
 
 `ztp-app` là bảng điều khiển Flask cho Juniper ZTP trên một VLAN/L2 cô lập. Thiết bị nhận DHCP, tải file từ Nginx và tự commit. App không SSH để đẩy cấu hình trực tiếp.
 
 ## Ba operating mode
 
-- `ZTP_PROVISIONING`: DHCP cấp mạng và mọi client dùng `/ztp/config`; resolver chọn file theo `STATIC` hoặc `AUTO`.
+- `ZTP_PROVISIONING`: DHCP cấp mạng; thiết bị chỉ dùng `/ztp/config`. MAC claim file `AVAILABLE` tiếp theo theo `allocation_order` và luôn nhận lại đúng file đã claim.
 - `DHCP_FILE_SERVER`: DHCP chỉ cấp IP/subnet/gateway/DNS; không có Option ZTP, không assignment. Người vận hành tải file trực tiếp từ `/configs/<filename>`.
 - `FILE_SERVER_ONLY`: chỉ Nginx/Flask và file download; ISC DHCP không được chạy, không lease/parser/resolver.
 
@@ -14,10 +14,19 @@
 
 1. **Settings → Operating mode**: chọn mode. Khi vào `FILE_SERVER_ONLY`, xác nhận stop/disable DHCP. Khi vào mode DHCP, chọn **Apply** mới validate candidate và start/enable; chỉ Save thì không tự start.
 2. **Settings → Network**: bấm **Refresh interfaces**, chọn Internet interface và ZTP interface, kiểm tra link/IPv4. Bấm **Suggest pool**, nhập `Mask length` (ví dụ `24`), rà lại Server IP/range và xác nhận không có DHCP server khác cùng L2.
-3. **Config Files**: upload `.conf`/`.txt`. File mới mặc định không vào Auto Pool. Bấm **View** để xem nội dung read-only sau khi đăng nhập; **Download** là URL dành cho thiết bị. Client trong VLAN ZTP có thể xem danh sách read-only tại `http://<server>/configs/`. Bật Auto Pool tại bảng metadata, rồi khai báo model/group hoặc `Allow any model`.
-4. **Overview → Mapping setup (advanced)**: `STATIC` = file cố định; `AUTO` = resolver chọn file đã opt-in. Serial chỉ dùng khi đã xác nhận serial nằm cuối Option 60; MAC cần DHCP IP khi có reservation.
-5. **Logs**: xem raw Option 60, DHCP lease và structured Nginx fetch. Chỉ response đủ bytes mới chuyển `DELIVERED`/`DOWNLOADED`; HTTP 200 partial là lỗi cần xem lại.
-6. Test một thiết bị trước, sau đó mới mở rộng batch. Không còn bước Health/SSH/manual verification trong workflow chính.
+3. **Config Files**: upload các config đã chuẩn bị, kiểm tra checksum và `allocation_order`. File `AVAILABLE` mới được cấp; `ASSIGNED`, `DELIVERED`, `VERIFIED` và `REVIEW_REQUIRED` được bảo vệ.
+4. **Overview → Project control**: đặt số thiết bị dự kiến, xử lý các activation check, rồi chuyển project sang `ACTIVE`. `PAUSED` chặn MAC mới nhưng vẫn cho thiết bị đã assignment tải lại file cũ.
+5. **Recent provisioning clients**: filter theo state, MAC/serial/config/IP/thời gian. Dùng **Verify** sau khi xác nhận thiết bị đã load/commit đúng; **Archive** chỉ ẩn khỏi recent UI và không xóa báo cáo.
+6. **Logs**: xem 200 audit event gần nhất và raw log khi troubleshooting. Chỉ response đủ bytes mới chuyển `DELIVERED`; HTTP 200 partial không được coi là thành công.
+
+Trong `ZTP_PROVISIONING`, `/configs/` bị chặn để client không bypass resolver. Directory listing chỉ hoạt động trong `DHCP_FILE_SERVER` và `FILE_SERVER_ONLY`. Phần Specific Device/Generic Profile cũ chỉ giữ cho backward compatibility và eligibility metadata; không quyết định file trong project MAC-first.
+
+## State và migration v26.09
+
+- State canonical nằm tại `/var/lib/ztp-app/provisioning_state.json`; project, device assignment và config ownership được commit cùng một allocation lock và một atomic replace.
+- Lần khởi động đầu tiên tự backup `config_pool.json` và `assignments.json` vào `migration-backup-provisioning-v1`, sau đó migrate idempotent. File cũ được giữ làm compatibility snapshot, không bị xóa.
+- Project mới/migrated mặc định `PAUSED`. Operator phải review validation rồi chuyển `ACTIVE`; assignment cũ vẫn được giữ.
+- Full mapping CSV/XLSX luôn lấy toàn bộ persistent state, không phụ thuộc giới hạn 100 client trên UI.
 
 ## Cài trên Ubuntu VM
 
@@ -47,7 +56,7 @@ ip -br -4 addr
 
 ## An toàn và rollback
 
-- Mọi JSON dùng temp + `fsync` + `os.replace()` và có `.bak`; JSON hỏng làm deploy dừng.
+- Provisioning runtime dùng một canonical JSON, temp + `fsync` + `os.replace()`; JSON hỏng làm deploy dừng.
 - DHCP deploy sinh candidate, chạy `dhcpd -t`, backup `/etc/dhcp/dhcpd.conf`, atomic replace; restart lỗi sẽ restore và restart bản backup. Không restart Nginx khi deploy DHCP.
 - File config có checksum; file đang reserved/fetching/delivered/active download không được ghi đè/xóa. Cùng checksum trả `UNCHANGED`; file mới là `ADDED`; thay đổi không bị bảo vệ là `UPDATED` và giữ metadata.
 - **Export all** tạo ZIP có manifest/checksum, không chứa credentials/admin secret. **Import all** preview/validate trước, backup trước restore, không tự start DHCP.
@@ -71,4 +80,18 @@ ZTP_DEV=1 ZTP_WEBROOT=./_webroot ZTP_DHCPD=./_dhcpd.conf python app.py
 python -m unittest -v
 ```
 
-Version hiện tại: **26.08.14**.
+## Update Ubuntu VM an toàn
+
+Không xóa hoặc reset `/var/lib/ztp-app`:
+
+```bash
+cd ~/projects/ztp-app
+git pull --ff-only origin main
+sudo BRIDGE_IF=<ztp-interface> deploy/install.sh
+sudo systemctl restart ztp-app.service
+sudo systemctl is-active ztp-app.service nginx
+```
+
+Rollback source: checkout commit trước, chạy lại installer; state/runtime vẫn giữ nguyên. Trước rollback nên dùng **Export all data**.
+
+Version hiện tại: **26.09.0**.

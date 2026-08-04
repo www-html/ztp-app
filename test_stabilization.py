@@ -16,7 +16,7 @@ class StabilizationTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.old = {name: getattr(app, name) for name in (
             "DATA_DIR", "NGINX_DIR", "UPLOAD_DIR", "DEVICES_JSON", "STATIC_MAPPINGS_JSON",
-            "PROFILES_JSON", "SETTINGS_JSON", "CREDS_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON",
+            "PROFILES_JSON", "SETTINGS_JSON", "CREDS_JSON", "PROVISIONING_STATE_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON",
             "RESULTS_JSON", "HISTORY_JSONL", "DEVICE_RUNTIME_JSON", "DOWNLOAD_RECORDS_JSON",
             "PARSER_CURSORS_JSON", "ALLOCATION_LOCK", "HISTORY_LOCK", "LEASES_FILE", "SYSLOG_FILE",
             "NGINX_ACCESS", "DEV_MODE")}
@@ -24,7 +24,7 @@ class StabilizationTests(unittest.TestCase):
         app.NGINX_DIR = root / "configs"; app.NGINX_DIR.mkdir()
         app.UPLOAD_DIR = root / "uploads"; app.UPLOAD_DIR.mkdir()
         for name in ("DEVICES_JSON", "STATIC_MAPPINGS_JSON", "PROFILES_JSON", "SETTINGS_JSON", "CREDS_JSON",
-                     "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON", "RESULTS_JSON", "HISTORY_JSONL",
+                     "PROVISIONING_STATE_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON", "RESULTS_JSON", "HISTORY_JSONL",
                      "DEVICE_RUNTIME_JSON", "DOWNLOAD_RECORDS_JSON", "PARSER_CURSORS_JSON"):
             setattr(app, name, app.DATA_DIR / Path(getattr(app, name)).name)
         app.ALLOCATION_LOCK = app.DATA_DIR / "allocation.lock"
@@ -107,18 +107,18 @@ class StabilizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(app.read_config_pool()[0]["status"], "QUARANTINED")
 
-    def test_legacy_primary_pages_are_not_available(self):
+    def test_legacy_bindings_page_is_gone_and_verify_route_is_available(self):
         self.settings()
         client = app.app.test_client()
         self.assertEqual(client.get("/bindings").status_code, 404)
-        self.assertEqual(client.post("/provisioning/verify/mac:x").status_code, 404)
+        self.assertEqual(client.post("/provisioning/verify/mac:x").status_code, 302)
 
     def test_overview_has_exactly_four_primary_menu_items(self):
         self.settings()
         html = app.app.test_client().get("/?view=overview").get_data(as_text=True)
         for label in ("Overview", "Config Files", "Logs", "Settings"):
             self.assertIn(label, html)
-        self.assertIn("DHCP_FILE_SERVER" if app.operating_mode() == "DHCP_FILE_SERVER" else "Provisioning clients", html)
+        self.assertIn("DHCP_FILE_SERVER" if app.operating_mode() == "DHCP_FILE_SERVER" else "Recent provisioning clients", html)
         self.assertNotIn("Health", html)
         self.assertNotIn("SSH credentials", html)
 
