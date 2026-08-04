@@ -28,7 +28,7 @@ cp -r "$APP_SRC"/. "$APP_DST"/
 mkdir -p /var/lib/ztp-app
 # Persistent state survives application updates.  Never overwrite an
 # existing runtime file from the previous installation.
-for state in devices.json static_mappings.json generic_profiles.json settings.json creds.json config_pool.json assignments.json results.json history.jsonl device_runtime.json download_records.json parser_cursors.json admin_auth.json .secret_key; do
+for state in devices.json static_mappings.json generic_profiles.json settings.json creds.json provisioning_state.json config_pool.json assignments.json results.json history.jsonl device_runtime.json download_records.json parser_cursors.json admin_auth.json .secret_key; do
   [ -e "$APP_DST/$state" ] && [ -e "/var/lib/ztp-app/$state" ] || [ ! -e "$APP_DST/$state" ] || cp -an "$APP_DST/$state" "/var/lib/ztp-app/$state"
 done
 chown -R root:root /var/lib/ztp-app

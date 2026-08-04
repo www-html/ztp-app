@@ -16,13 +16,14 @@ class ProvisioningSafetyTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.old = {name: getattr(app, name) for name in (
             "NGINX_DIR", "UPLOAD_DIR", "DEVICES_JSON", "STATIC_MAPPINGS_JSON", "PROFILES_JSON", "SETTINGS_JSON",
-            "CREDS_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON", "RESULTS_JSON",
+            "CREDS_JSON", "PROVISIONING_STATE_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON", "RESULTS_JSON",
             "HISTORY_JSONL", "ALLOCATION_LOCK", "HISTORY_LOCK", "LEASES_FILE", "SYSLOG_FILE",
         )}
         app.NGINX_DIR = root / "configs"; app.NGINX_DIR.mkdir()
         app.UPLOAD_DIR = root / "uploads"; app.UPLOAD_DIR.mkdir()
         app.DEVICES_JSON = root / "devices.json"; app.STATIC_MAPPINGS_JSON = root / "static_mappings.json"; app.PROFILES_JSON = root / "profiles.json"
         app.SETTINGS_JSON = root / "settings.json"; app.CREDS_JSON = root / "creds.json"
+        app.PROVISIONING_STATE_JSON = root / "provisioning_state.json"
         app.CONFIG_POOL_JSON = root / "config_pool.json"; app.ASSIGNMENTS_JSON = root / "assignments.json"
         app.RESULTS_JSON = root / "results.json"; app.HISTORY_JSONL = root / "history.jsonl"
         app.ALLOCATION_LOCK = root / "allocation.lock"; app.HISTORY_LOCK = root / "history.lock"
@@ -45,6 +46,9 @@ class ProvisioningSafetyTests(unittest.TestCase):
                          "auto_pool_enabled": True, "allow_any_model": True,
                          "created_at": "now", "updated_at": "now"})
         app.write_config_pool(rows)
+        state = app.read_provisioning_state()
+        state["project"].update({"status": "ACTIVE", "expected_devices": 0})
+        app.commit_provisioning_state(state)
 
     def test_thirty_concurrent_reservations_do_not_duplicate(self):
         self.add_configs([f"auto-{i}.conf" for i in range(30)])
@@ -93,7 +97,7 @@ class ProvisioningSafetyTests(unittest.TestCase):
         body2, filename2, status2 = app.dynamic_config_result("192.168.250.10")
         self.assertEqual((filename2, status2, body2), (filename, status, body))
 
-    def test_static_model_mismatch_does_not_fallback_to_auto(self):
+    def test_project_resolver_ignores_static_model_mapping(self):
         self.add_configs(["static.conf", "auto.conf"])
         pool = app.read_config_pool()
         pool[0]["supported_models"] = ["EX4100-24T"]
@@ -103,11 +107,12 @@ class ProvisioningSafetyTests(unittest.TestCase):
         app.LEASES_FILE.write_text("lease 192.168.250.10 { hardware ethernet aa:bb:cc:dd:ee:02; binding state active; }", encoding="utf-8")
         app.DEVICES_JSON.write_text('[{"match_method":"mac","mac_address":"aa:bb:cc:dd:ee:02","hostname":"edge-2","device_type":"EX4100-48T","ip_address":"192.168.250.10","specific_config_file":"static.conf","assignment_type":"STATIC"}]', encoding="utf-8")
         app.PROFILES_JSON.write_text('[{"label":"fallback","vendor_class":"EX4100","match_mode":"contains","assignment_type":"AUTO","option60_confirmed":"yes"}]', encoding="utf-8")
-        body, reason, status = app.dynamic_config_result("192.168.250.10")
-        self.assertIsNone(body); self.assertEqual((reason, status), ("MODEL_MISMATCH", 409))
-        self.assertNotIn("auto.conf", {item.get("filename") for item in app.read_assignments().values()})
+        body, filename, status = app.dynamic_config_result("192.168.250.10")
+        self.assertEqual((filename, status), ("static.conf", 200))
+        self.assertIn(b"root-authentication", body)
+        self.assertEqual("static.conf", app.read_assignments()["mac:aa:bb:cc:dd:ee:02"]["filename"])
 
-    def test_static_requires_file_and_empty_auto_pool_is_review_required(self):
+    def test_static_validation_remains_but_empty_project_pool_is_not_assigned(self):
         row = {"match_method": "mac", "mac_address": "aa:bb:cc:dd:ee:03",
                "hostname": "edge-3", "assignment_type": "STATIC"}
         errors = app.validate_device_row(row, [], settings=app.DEFAULT_SETTINGS)
@@ -120,10 +125,13 @@ class ProvisioningSafetyTests(unittest.TestCase):
             '"assignment_type":"AUTO","option60_confirmed":"yes"}]', encoding="utf-8")
         app.SYSLOG_FILE.write_text(
             'dhcpd vendor-class-identifier "EX4400" 192.168.250.11', encoding="utf-8")
+        state = app.read_provisioning_state()
+        state["project"].update({"status": "ACTIVE", "expected_devices": 0})
+        app.commit_provisioning_state(state)
         body, reason, status = app.dynamic_config_result("192.168.250.11")
         self.assertIsNone(body)
-        self.assertEqual((reason, status), ("AUTO_POOL_EMPTY", 409))
-        self.assertEqual(app.read_assignments()["mac:aa:bb:cc:dd:ee:03"]["state"], "REVIEW_REQUIRED")
+        self.assertEqual((reason, status), ("CONFIG_POOL_EMPTY", 409))
+        self.assertNotIn("mac:aa:bb:cc:dd:ee:03", app.read_assignments())
 
     def test_json_schema_error_and_file_server_only(self):
         app.DEVICES_JSON.write_text("[1]", encoding="utf-8")
@@ -133,7 +141,7 @@ class ProvisioningSafetyTests(unittest.TestCase):
         ok, message = app.deploy_dhcpd("ignored", settings=app.read_settings(), devices=[], profiles=[])
         self.assertTrue(ok); self.assertIn("FILE_SERVER_ONLY", message)
 
-    def test_runtime_thresholds_and_delivery_workflow_has_no_manual_verify(self):
+    def test_runtime_thresholds_and_verify_requires_delivery(self):
         self.add_configs(["auto.conf"])
         app.write_assignments({"mac:aa": {"device_key": "mac:aa", "assignment_type": "AUTO",
                                            "filename": "auto.conf", "status": "RESERVED", "state": "ASSIGNED",
@@ -145,7 +153,7 @@ class ProvisioningSafetyTests(unittest.TestCase):
         self.assertEqual(app.export_history_rows()[0]["event_type"], "TEST_EVENT")
         client = app.app.test_client()
         response = client.post("/provisioning/verify/mac:aa", data={"result": "COMPLETED"})
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 302)
         self.assertNotIn("COMPLETED", app.read_assignments()["mac:aa"].get("state", ""))
 
     def test_json_backup_is_created_before_replacement(self):

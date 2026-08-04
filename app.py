@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.08.09]
+ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.09.0]
 Author: binh.trinh
 
 Matching (method-driven, not model-hardcoded):
@@ -9,8 +9,8 @@ Matching (method-driven, not model-hardcoded):
   - Generic Profile       -> elsif option vendor-class-identifier ~= "<vendor-class>"
 File-server advertised via Option 66 (tftp-server-name).
 
-v26.08.09: three operating modes, active/pending mode protection, persistent runtime
-resume, unified client view, safe DHCP/config deployment and secret-free backup/restore.
+v26.09.0: atomic MAC-first project allocation, retry-safe config reuse, allocation
+review/release controls, project-aware config access, and CSV/XLSX mapping workflow.
 
 Run:
   ZTP_DEV=1 python app.py            # dev (Flask reloader)
@@ -59,6 +59,7 @@ SETTINGS_JSON= Path(os.environ.get("ZTP_SETTINGS", str(DATA_DIR / "settings.json
 CREDS_JSON   = Path(os.environ.get("ZTP_CREDS", str(DATA_DIR / "creds.json")))
 CONFIG_POOL_JSON = Path(os.environ.get("ZTP_CONFIG_POOL", str(DATA_DIR / "config_pool.json")))
 ASSIGNMENTS_JSON = Path(os.environ.get("ZTP_ASSIGNMENTS", str(DATA_DIR / "assignments.json")))
+PROVISIONING_STATE_JSON = Path(os.environ.get("ZTP_PROVISIONING_STATE", str(DATA_DIR / "provisioning_state.json")))
 RESULTS_JSON = Path(os.environ.get("ZTP_RESULTS", str(DATA_DIR / "results.json")))
 HISTORY_JSONL = Path(os.environ.get("ZTP_HISTORY", str(DATA_DIR / "history.jsonl")))
 DEVICE_RUNTIME_JSON = Path(os.environ.get("ZTP_DEVICE_RUNTIME", str(DATA_DIR / "device_runtime.json")))
@@ -76,7 +77,7 @@ NGINX_ACCESS = Path(os.environ.get("ZTP_NGINX_ACCESS", "/var/log/nginx/ztp-acces
 DHCP_INTERFACE_FILE = Path(os.environ.get("ZTP_DHCP_INTERFACE_FILE", "/etc/default/isc-dhcp-server"))
 
 PERSISTENT_JSON_NAMES = ("devices.json", "static_mappings.json", "generic_profiles.json",
-                         "settings.json", "creds.json", "config_pool.json", "assignments.json",
+                         "settings.json", "creds.json", "config_pool.json", "assignments.json", "provisioning_state.json",
                          "results.json", "device_runtime.json", "download_records.json",
                          "parser_cursors.json", "history.jsonl", "admin_auth.json", ".secret_key")
 
@@ -116,6 +117,7 @@ DEFAULT_SETTINGS = {
     "active_mode": os.environ.get("ZTP_MODE", "ZTP_PROVISIONING"),
     "pending_mode": "",
     "deployment_name": os.environ.get("ZTP_DEPLOYMENT_NAME", "ztp-deployment"),
+    "project_expected_devices": os.environ.get("ZTP_EXPECTED_DEVICES", "150"),
     "server_ip": os.environ.get("ZTP_VM_IP", "192.168.250.1"),
     "gateway": os.environ.get("ZTP_GATEWAY", ""),
     "subnet":    os.environ.get("ZTP_SUBNET", "192.168.250.0"),
@@ -143,10 +145,13 @@ GLOBAL_MODES = OPERATING_MODES
 ASSIGNMENT_METHODS = ["STATIC", "AUTO"]
 ASSIGNMENT_TYPES = ASSIGNMENT_METHODS
 LEGACY_ASSIGNMENT_TYPES = ["DHCP_ONLY"]
-CONFIG_STATUSES = ["AVAILABLE", "RESERVED", "DELIVERED", "MISSING", "QUARANTINED"]
+CONFIG_STATUSES = ["AVAILABLE", "ASSIGNED", "RESERVED", "DELIVERED", "VERIFIED",
+                   "REVIEW_REQUIRED", "ARCHIVED", "MISSING", "QUARANTINED"]
+PROJECT_STATUSES = ["ACTIVE", "PAUSED", "CLOSED", "ARCHIVED"]
 PROVISION_STATES = ["DHCP_SEEN", "LEASED", "ASSIGNED", "ASSIGNED_NO_FETCH", "FETCHING",
-                    "DELIVERED", "PARTIAL_FETCH", "FETCH_FAILED", "REPEATED_FETCH", "DHCP_RETRY_LOOP",
-                    "REVIEW_REQUIRED", "MODEL_UNKNOWN", "MODEL_MISMATCH", "CONFIG_METADATA_REQUIRED"]
+                    "DELIVERED", "VERIFIED", "ARCHIVED", "PARTIAL_FETCH", "FETCH_FAILED",
+                    "REPEATED_FETCH", "DHCP_RETRY_LOOP", "REVIEW_REQUIRED", "MODEL_UNKNOWN",
+                    "MODEL_MISMATCH", "CONFIG_METADATA_REQUIRED"]
 URL_MAX       = 256
 SERIAL_RE       = re.compile(r"^[A-Za-z0-9]+$")
 VENDOR_CLASS_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
@@ -161,12 +166,12 @@ PROFILE_FIELDS = ["label", "vendor_class", "match_mode", "config_file", "assignm
 SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "range_high",
                    "internet_interface", "ztp_interface", "global_mode", "operating_mode",
                    "active_mode", "pending_mode",
-                   "deployment_name", "dns_servers", "lease_time", "max_lease_time", "advertise_file_server",
+                   "deployment_name", "project_expected_devices", "dns_servers", "lease_time", "max_lease_time", "advertise_file_server",
                    "assigned_no_fetch_minutes", "repeated_fetch_limit",
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.08.14"   # read-only Nginx config directory listing
+VERSION = "26.09.0"   # atomic MAC-first project provisioning
 
 
 class JsonDataError(RuntimeError):
@@ -734,20 +739,136 @@ def _read_list_store(path: Path, default: list) -> list:
     return value
 
 
+def _default_provisioning_state() -> dict:
+    settings = read_settings()
+    return {
+        "schema_version": 1,
+        "project": {
+            "name": settings.get("deployment_name", "ztp-deployment"),
+            "status": "PAUSED",
+            "expected_devices": _safe_int(settings, "project_expected_devices", 150),
+            "updated_at": _now_iso(),
+        },
+        "configs": {},
+        "devices": {},
+    }
+
+
+def _normalize_provisioning_state(value: dict) -> dict:
+    if not isinstance(value, dict):
+        raise JsonDataError(f"Expected {PROVISIONING_STATE_JSON} to contain a JSON object.")
+    state = dict(value)
+    project = state.get("project")
+    configs = state.get("configs")
+    devices = state.get("devices")
+    if not isinstance(project, dict) or not isinstance(configs, dict) or not isinstance(devices, dict):
+        raise JsonDataError(f"Invalid provisioning state schema in {PROVISIONING_STATE_JSON}.")
+    status = str(project.get("status") or "PAUSED").upper()
+    project["status"] = status if status in PROJECT_STATUSES else "PAUSED"
+    project.setdefault("name", read_settings().get("deployment_name", "ztp-deployment"))
+    project.setdefault("expected_devices", _safe_int(read_settings(), "project_expected_devices", 150))
+    state["schema_version"] = 1
+    state["project"] = project
+    state["configs"] = configs
+    state["devices"] = devices
+    return state
+
+
+def _legacy_provisioning_state() -> dict:
+    state = _default_provisioning_state()
+    for row in _read_list_store(CONFIG_POOL_JSON, []):
+        filename = str(row.get("filename", "")).strip()
+        if filename:
+            state["configs"][filename] = dict(row)
+    for key, assignment in _read_object_store(ASSIGNMENTS_JSON, {}).items():
+        item = dict(assignment)
+        filename = str(item.get("filename") or item.get("assigned_filename") or "")
+        item["filename"] = filename
+        item["config"] = filename
+        state["devices"][key] = item
+    return state
+
+
+def read_provisioning_state() -> dict:
+    if PROVISIONING_STATE_JSON.exists():
+        return _normalize_provisioning_state(_read_object_store(PROVISIONING_STATE_JSON, {}))
+    return _legacy_provisioning_state()
+
+
+def _state_pool_rows(state: dict) -> list[dict]:
+    rows = []
+    for filename, value in state.get("configs", {}).items():
+        row = dict(value)
+        row["filename"] = filename
+        rows.append(row)
+    return rows
+
+
+def commit_provisioning_state(state: dict) -> None:
+    """Atomically commit project, devices and config ownership in one canonical file.
+
+    Legacy assignments.json/config_pool.json are compatibility snapshots written
+    only after the canonical commit; recovery always trusts provisioning_state.json.
+    """
+    normalized = _normalize_provisioning_state(state)
+    _atomic_write_json(PROVISIONING_STATE_JSON, normalized)
+    _atomic_write_json(CONFIG_POOL_JSON, _state_pool_rows(normalized))
+    _atomic_write_json(ASSIGNMENTS_JSON, normalized["devices"])
+
+
+def migrate_provisioning_state() -> bool:
+    """Idempotently migrate legacy assignment/pool stores with a recoverable backup."""
+    if PROVISIONING_STATE_JSON.exists():
+        read_provisioning_state()
+        return False
+    with _exclusive_lock(ALLOCATION_LOCK):
+        if PROVISIONING_STATE_JSON.exists():
+            return False
+        backup_dir = DATA_DIR / "migration-backup-provisioning-v1"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for source in (CONFIG_POOL_JSON, ASSIGNMENTS_JSON):
+            target = backup_dir / source.name
+            if source.exists() and not target.exists():
+                shutil.copy2(source, target)
+        state = _legacy_provisioning_state()
+        commit_provisioning_state(state)
+    append_history("PROVISIONING_STATE_MIGRATED", operator="system",
+                   configs=len(state["configs"]), devices=len(state["devices"]),
+                   backup=str(backup_dir))
+    return True
+
+
 def read_config_pool() -> list[dict]:
-    return _read_list_store(CONFIG_POOL_JSON, [])
+    return _state_pool_rows(read_provisioning_state())
 
 
 def write_config_pool(rows: list[dict]) -> None:
-    _atomic_write_json(CONFIG_POOL_JSON, rows)
+    state = read_provisioning_state()
+    state["configs"] = {str(row.get("filename", "")).strip(): dict(row)
+                        for row in rows if str(row.get("filename", "")).strip()}
+    for filename, row in state["configs"].items():
+        row.pop("filename", None)
+    commit_provisioning_state(state)
 
 
 def read_assignments() -> dict:
-    return _read_object_store(ASSIGNMENTS_JSON, {})
+    return {key: dict(value) for key, value in read_provisioning_state()["devices"].items()}
 
 
 def write_assignments(data: dict) -> None:
-    _atomic_write_json(ASSIGNMENTS_JSON, data)
+    state = read_provisioning_state()
+    state["devices"] = {str(key): dict(value) for key, value in data.items()}
+    commit_provisioning_state(state)
+
+
+def write_allocation_state(pool: list[dict], assignments: dict) -> None:
+    """Commit config ownership and device assignments as one canonical update."""
+    state = read_provisioning_state()
+    state["configs"] = {str(row.get("filename", "")).strip():
+                        {key: value for key, value in dict(row).items() if key != "filename"}
+                        for row in pool if str(row.get("filename", "")).strip()}
+    state["devices"] = {str(key): dict(value) for key, value in assignments.items()}
+    commit_provisioning_state(state)
 
 
 def read_results() -> dict:
@@ -819,6 +940,13 @@ def assignment_type(row: dict, default: str = "STATIC") -> str:
     return default
 
 
+def normalize_mac(value: str) -> str:
+    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    if len(text) != 12:
+        return ""
+    return ":".join(text[index:index + 2] for index in range(0, 12, 2)).lower()
+
+
 def device_key(row: dict | None = None, *, serial: str = "", mac: str = "",
                client_id: str = "", ip: str = "") -> str:
     row = row or {}
@@ -826,10 +954,11 @@ def device_key(row: dict | None = None, *, serial: str = "", mac: str = "",
     mac = mac or row.get("mac_address", "")
     client_id = client_id or row.get("client_id", "")
     ip = ip or row.get("ip_address", "")
+    normalized_mac = normalize_mac(mac)
+    if normalized_mac:
+        return f"mac:{normalized_mac}"
     if serial:
         return f"serial:{str(serial).strip().lower()}"
-    if mac:
-        return f"mac:{str(mac).strip().lower()}"
     if client_id:
         return f"client-id:{str(client_id).strip().lower()}"
     return f"ip:{str(ip).strip()}" if ip else ""
@@ -1209,11 +1338,12 @@ def repair_state_consistency() -> list[str]:
     repairs = []
     changed_pool = changed_assignments = changed_cursors = False
     with _exclusive_lock(ALLOCATION_LOCK):
-        pool = read_config_pool()
-        assignments = read_assignments()
+        provisioning_state = read_provisioning_state()
+        pool = _state_pool_rows(provisioning_state)
+        assignments = provisioning_state["devices"]
         by_file = {}
         for key, assignment in assignments.items():
-            filename = assignment.get("filename") or assignment.get("assigned_filename")
+            filename = assignment.get("config") or assignment.get("filename") or assignment.get("assigned_filename")
             if filename:
                 by_file.setdefault(filename, []).append(key)
             path = NGINX_DIR / filename if filename else None
@@ -1251,7 +1381,7 @@ def repair_state_consistency() -> list[str]:
                 item.update({"status": "QUARANTINED", "assigned_device": "", "updated_at": _now_iso()})
                 repairs.append(("QUARANTINE_MISSING_CONFIG", "", filename))
                 changed_pool = True
-            elif item.get("status") == "RESERVED" and not owners and owner:
+            elif item.get("status") in {"RESERVED", "ASSIGNED"} and not owners and owner:
                 item.update({"status": "QUARANTINED", "assigned_device": "", "updated_at": _now_iso()})
                 repairs.append(("ORPHAN_RESERVED", "", filename))
                 changed_pool = True
@@ -1260,7 +1390,7 @@ def repair_state_consistency() -> list[str]:
                 repairs.append(("OWNER_MISMATCH", owner, filename))
                 changed_pool = True
             elif owners and item.get("status") == "AVAILABLE":
-                item.update({"status": "RESERVED", "assigned_device": owners[0], "updated_at": _now_iso()})
+                item.update({"status": "ASSIGNED", "assigned_device": owners[0], "updated_at": _now_iso()})
                 repairs.append(("ASSIGNMENT_RESERVED", owners[0], filename))
                 changed_pool = True
             for key in owners:
@@ -1276,10 +1406,11 @@ def repair_state_consistency() -> list[str]:
                 cursor["offset"] = 0
                 repairs.append(("PARSER_CURSOR_RESET", "", cursor_key))
                 changed_cursors = True
-        if changed_pool:
-            write_config_pool(pool)
-        if changed_assignments:
-            write_assignments(assignments)
+        if changed_pool or changed_assignments:
+            provisioning_state["configs"] = {item["filename"]: {key: value for key, value in item.items() if key != "filename"}
+                                               for item in pool if item.get("filename")}
+            provisioning_state["devices"] = assignments
+            commit_provisioning_state(provisioning_state)
         if changed_cursors:
             write_parser_cursors(cursors)
     for event, key, filename in repairs:
@@ -1694,7 +1825,7 @@ def release_conflicting_auto_for_static(row: dict) -> None:
             if meta:
                 meta.update({"status": "RESERVED", "assigned_device": wanted_key, "updated_at": _now_iso()})
         if keys:
-            write_config_pool(pool); write_assignments(assignments)
+            write_allocation_state(pool, assignments)
         elif row.get("specific_config_file"):
             write_config_pool(pool)
 
@@ -1738,6 +1869,286 @@ def _new_assignment(key: str, filename: str, row: dict | None, lease: dict, clie
     }
 
 
+def project_status(state: dict | None = None) -> str:
+    value = state or read_provisioning_state()
+    status = str(value.get("project", {}).get("status") or "PAUSED").upper()
+    return status if status in PROJECT_STATUSES else "PAUSED"
+
+
+def project_validation_errors(state: dict | None = None) -> list[str]:
+    state = state or read_provisioning_state()
+    errors = []
+    owners = {}
+    available = 0
+    owned = 0
+    for filename, meta in state.get("configs", {}).items():
+        if not filename or Path(filename).name != filename or not _allowed(filename):
+            errors.append(f"Invalid config filename: {filename or '(empty)' }.")
+            continue
+        path = NGINX_DIR / filename
+        if not path.is_file():
+            errors.append(f"Config file is missing: {filename}.")
+        checksum = str(meta.get("checksum") or "")
+        if not checksum:
+            errors.append(f"Config checksum is missing: {filename}.")
+        elif path.is_file():
+            try:
+                if config_sha256(path) != checksum:
+                    errors.append(f"Config checksum mismatch: {filename}.")
+            except OSError as exc:
+                errors.append(f"Config cannot be read: {filename}: {exc}.")
+        if meta.get("status") == "AVAILABLE":
+            available += 1
+        owner = str(meta.get("assigned_device") or "")
+        if owner:
+            owners.setdefault(owner, []).append(filename)
+            owned += 1
+    for key, device in state.get("devices", {}).items():
+        filename = str(device.get("config") or device.get("filename") or "")
+        if filename:
+            meta = state.get("configs", {}).get(filename)
+            if not meta or meta.get("assigned_device") != key:
+                errors.append(f"Ownership mismatch: {key} -> {filename}.")
+    by_file = {}
+    for key, device in state.get("devices", {}).items():
+        filename = str(device.get("config") or device.get("filename") or "")
+        if filename:
+            by_file.setdefault(filename, []).append(key)
+    for filename, keys in by_file.items():
+        if len(keys) > 1:
+            errors.append(f"Config has multiple owners: {filename}.")
+    expected = max(0, int(state.get("project", {}).get("expected_devices", 0) or 0))
+    try:
+        settings = read_settings()
+        pool_size = int(ipaddress.IPv4Address(settings["range_high"])) - int(ipaddress.IPv4Address(settings["range_low"])) + 1
+        if expected and pool_size < expected:
+            errors.append(f"DHCP pool has {pool_size} addresses but project expects {expected} devices.")
+    except (KeyError, ValueError, ipaddress.AddressValueError):
+        errors.append("DHCP pool capacity cannot be validated.")
+    if expected and available + owned < expected:
+        errors.append(f"Only {available + owned} allocatable/owned configs for {expected} expected devices.")
+    if operating_mode() != "ZTP_PROVISIONING":
+        errors.append("Operating mode must be ZTP_PROVISIONING; direct /configs/ browsing will then be blocked.")
+    return list(dict.fromkeys(errors))
+
+
+def set_project_status(target: str, *, operator: str = "operator") -> tuple[bool, str]:
+    target = str(target or "").upper()
+    if target not in PROJECT_STATUSES:
+        return False, f"Unsupported project status: {target}."
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        old = project_status(state)
+        if target == "ACTIVE":
+            errors = project_validation_errors(state)
+            if errors:
+                return False, "Project cannot become ACTIVE:\n" + "\n".join(errors)
+        state["project"].update({"status": target, "updated_at": _now_iso()})
+        commit_provisioning_state(state)
+    event = "PROJECT_RESUMED" if target == "ACTIVE" else f"PROJECT_{target}"
+    append_history(event, operator=operator, old_value=old, new_value=target)
+    return True, f"Project status changed from {old} to {target}."
+
+
+def sync_project_settings(settings: dict) -> None:
+    """Keep configurable project metadata inside the canonical state."""
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        project = state["project"]
+        expected = _safe_int(settings, "project_expected_devices", 150)
+        name = str(settings.get("deployment_name") or "ztp-deployment")
+        if project.get("expected_devices") == expected and project.get("name") == name:
+            return
+        project.update({"expected_devices": expected, "name": name, "updated_at": _now_iso()})
+        commit_provisioning_state(state)
+
+
+def archive_project_client(key: str, *, operator: str = "operator") -> tuple[bool, str]:
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        device = state["devices"].get(key)
+        if not device:
+            return False, "Client was not found."
+        device.update({"archived": True, "archived_at": _now_iso(), "updated_at": _now_iso()})
+        commit_provisioning_state(state)
+    append_history("ARCHIVE_CLIENT", key, operator=operator, filename=device.get("filename", ""))
+    return True, "Client archived; mapping and history were preserved."
+
+
+def reset_project_client(key: str, *, allow_delivered: bool = False,
+                         operator: str = "operator") -> tuple[bool, str]:
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        device = state["devices"].get(key)
+        if not device:
+            return False, "Client was not found."
+        current_state = str(device.get("state") or "")
+        filename = str(device.get("config") or device.get("filename") or "")
+        meta = state["configs"].get(filename)
+        if current_state in {"DELIVERED", "VERIFIED"}:
+            if not allow_delivered:
+                return False, "Delivered/verified reset requires explicit confirmation."
+            device.update({"state": "REVIEW_REQUIRED", "status": "REVIEW_REQUIRED",
+                           "last_error": "RESET_DELIVERED_REVIEW", "updated_at": _now_iso()})
+            if meta:
+                meta.update({"status": "REVIEW_REQUIRED", "assigned_device": key,
+                             "updated_at": _now_iso()})
+            commit_provisioning_state(state)
+            event = "RESET_TEST_CLIENT"
+            message = "Delivered client moved to REVIEW_REQUIRED; config remains protected."
+        elif current_state in {"ASSIGNED", "FETCH_FAILED", "PARTIAL_FETCH", "FETCHING", "ASSIGNED_NO_FETCH"}:
+            if meta and meta.get("assigned_device") == key:
+                meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
+            device.update({"config": "", "filename": "", "assigned_filename": "",
+                           "state": "DHCP_SEEN", "status": "RESET", "last_error": "",
+                           "reset_at": _now_iso(), "updated_at": _now_iso()})
+            commit_provisioning_state(state)
+            event = "RESET_TEST_CLIENT"
+            message = "Uncompleted client reset; config returned to AVAILABLE."
+        else:
+            return False, f"Client state {current_state or '(empty)'} cannot be reset."
+    append_history(event, key, operator=operator, filename=filename, old_value=current_state,
+                   new_value=device.get("state", ""))
+    return True, message
+
+
+def verify_project_client(key: str, *, remarks: str = "", operator: str = "operator") -> tuple[bool, str]:
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        device = state["devices"].get(key)
+        if not device or device.get("state") != "DELIVERED":
+            return False, "Only a DELIVERED client can be verified."
+        filename = device.get("config") or device.get("filename", "")
+        meta = state["configs"].get(filename)
+        now = _now_iso()
+        device.update({"state": "VERIFIED", "status": "VERIFIED", "verified_at": now,
+                       "remarks": remarks or device.get("remarks", ""), "updated_at": now})
+        if meta:
+            meta.update({"status": "VERIFIED", "assigned_device": key, "updated_at": now})
+        commit_provisioning_state(state)
+    append_history("VERIFIED", key, operator=operator, filename=filename, remarks=remarks)
+    return True, "Client marked VERIFIED."
+
+
+def release_review_config(filename: str, *, operator: str = "operator") -> tuple[bool, str]:
+    filename = os.path.basename(str(filename or ""))
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        meta = state["configs"].get(filename)
+        if not meta or meta.get("status") != "REVIEW_REQUIRED":
+            return False, "Only a REVIEW_REQUIRED config can be released."
+        key = str(meta.get("assigned_device") or "")
+        device = state["devices"].get(key)
+        if device and (device.get("config") or device.get("filename")) == filename:
+            device.update({"config": "", "filename": "", "assigned_filename": "",
+                           "state": "ARCHIVED", "status": "ARCHIVED", "archived": True,
+                           "updated_at": _now_iso()})
+        meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
+        commit_provisioning_state(state)
+    append_history("RELEASE_CONFIG", key, operator=operator, filename=filename)
+    return True, f"{filename} returned to AVAILABLE after review."
+
+
+def reserve_project_assignment(client_ip: str, lease: dict) -> tuple[dict | None, str]:
+    """MAC-first transaction: update one device and one config owner atomically."""
+    mac = normalize_mac(lease.get("mac", ""))
+    if not mac:
+        return None, "MAC_REQUIRED"
+    key = f"mac:{mac}"
+    sync_config_pool()
+    history = []
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        devices = state["devices"]
+        configs = state["configs"]
+        now = _now_iso()
+        for other_key, other in devices.items():
+            if other_key != key and other.get("current_dhcp_ip") == client_ip and not other.get("archived"):
+                history.append(("IP_CONFLICT", key, {"ip": client_ip, "conflicting_device": other_key}))
+                result = None
+                reason = "IP_CONFLICT"
+                break
+        else:
+            device = devices.get(key)
+            if device and (device.get("config") or device.get("filename")):
+                old_ip = device.get("current_dhcp_ip") or device.get("dhcp_ip", "")
+                filename = device.get("config") or device.get("filename", "")
+                device.update({"mac": mac, "client_id": lease.get("client_id", "") or device.get("client_id", ""),
+                               "option12": lease.get("hostname", "") or device.get("option12", ""),
+                               "option60": lease.get("option60", "") or device.get("option60", ""),
+                               "serial": lease.get("serial", "") or device.get("serial", ""),
+                               "detected_model": lease.get("detected_model", "") or device.get("detected_model", ""),
+                               "current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
+                               "last_seen": now, "updated_at": now,
+                               "request_count": int(device.get("request_count", 0) or 0) + 1,
+                               "request_count_total": int(device.get("request_count_total", 0) or 0) + 1})
+                if old_ip and old_ip != client_ip:
+                    history.append(("IP_CHANGED", key, {"old_value": old_ip, "new_value": client_ip,
+                                                         "filename": filename}))
+                history.append(("DHCP_SEEN", key, {"ip": client_ip, "filename": filename}))
+                commit_provisioning_state(state)
+                result, reason = dict(device), ""
+            elif project_status(state) != "ACTIVE":
+                if device:
+                    device.update({"current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
+                                   "last_seen": now, "updated_at": now})
+                    commit_provisioning_state(state)
+                result, reason = None, f"PROJECT_{project_status(state)}"
+                history.append((reason, key, {"ip": client_ip}))
+            else:
+                candidates = [(filename, meta) for filename, meta in configs.items()
+                              if meta.get("status") == "AVAILABLE"]
+                candidates.sort(key=lambda item: (int(item[1].get("allocation_order", 0) or 0), item[0]))
+                if not candidates:
+                    result, reason = None, "CONFIG_POOL_EMPTY"
+                    history.append(("CONFIG_POOL_EMPTY", key, {"ip": client_ip}))
+                else:
+                    filename, meta = candidates[0]
+                    path = NGINX_DIR / filename
+                    checksum = str(meta.get("checksum") or "")
+                    if not path.is_file() or not checksum:
+                        result, reason = None, "CONFIG_INVALID"
+                        history.append(("CONFIG_INVALID", key, {"ip": client_ip, "filename": filename}))
+                    else:
+                        sequence = int(state["project"].get("next_sequence", 1) or 1)
+                        device = dict(device or {})
+                        device.update({
+                            "device_key": key, "sequence": sequence, "mac": mac,
+                            "client_id": lease.get("client_id", ""),
+                            "serial": lease.get("serial", "") or device.get("serial", ""),
+                            "option12": lease.get("hostname", ""),
+                            "option60": lease.get("option60", "") or device.get("option60", ""),
+                            "detected_model": lease.get("detected_model", "") or device.get("detected_model", ""),
+                            "first_dhcp_ip": device.get("first_dhcp_ip") or client_ip,
+                            "current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
+                            "config": filename, "filename": filename, "assigned_filename": filename,
+                            "assigned_checksum": checksum, "config_sha256": checksum,
+                            "assigned_file_size": path.stat().st_size,
+                            "state": "ASSIGNED", "status": "ASSIGNED", "delivery_state": "ASSIGNED",
+                            "first_seen": device.get("first_seen") or now, "last_seen": now,
+                            "assigned_at": now, "updated_at": now, "first_fetch_at": "",
+                            "delivered_at": "", "verified_at": "", "archived": False,
+                            "assignment_type": "AUTO", "request_count": 1, "request_count_total": 1,
+                            "fetch_count": 0, "fetch_times": [], "retry_count": 0,
+                            "last_http_status": "", "expected_bytes": path.stat().st_size,
+                            "actual_bytes": 0, "last_error": "", "remarks": device.get("remarks", ""),
+                        })
+                        devices[key] = device
+                        meta.update({"status": "ASSIGNED", "assigned_device": key, "updated_at": now})
+                        state["project"]["next_sequence"] = sequence + 1
+                        state["project"]["updated_at"] = now
+                        commit_provisioning_state(state)
+                        result, reason = dict(device), ""
+                        history.extend([
+                            ("DHCP_SEEN", key, {"ip": client_ip}),
+                            ("ASSIGNED", key, {"ip": client_ip, "filename": filename,
+                                               "sequence": sequence}),
+                        ])
+    for event, event_key, fields in history:
+        append_history(event, event_key, **fields)
+    return result, reason
+
+
 def reserve_auto_assignment(client_ip: str, row: dict | None, profile: dict | None,
                             lease: dict, key: str) -> tuple[dict | None, str]:
     """Reserve one file while holding the single allocation lock."""
@@ -1768,8 +2179,7 @@ def reserve_auto_assignment(client_ip: str, row: dict | None, profile: dict | No
         selected["updated_at"] = _now_iso()
         assignment = _new_assignment(key, filename, row, lease, client_ip, "AUTO")
         assignments[key] = assignment
-        write_config_pool(pool)
-        write_assignments(assignments)
+        write_allocation_state(pool, assignments)
         append_history("RESERVE_AUTO", key, filename=filename, ip=client_ip)
         return assignment, ""
 
@@ -1811,22 +2221,19 @@ def _parse_time(value: str) -> datetime | None:
 def _ensure_static_runtime(key: str, row: dict, filename: str, client_ip: str, lease: dict) -> dict:
     with _exclusive_lock(ALLOCATION_LOCK):
         assignments = read_assignments()
+        pool = read_config_pool()
         old = assignments.get(key)
         if old and old.get("assignment_type") == "AUTO" and old.get("filename") != filename:
-            pool = read_config_pool()
             _release_auto_locked(assignments, pool, key, "STATIC_MAPPING")
-            write_config_pool(pool)
             append_history("STATIC_OVERRIDE", key, filename=filename)
         assignment = assignments.get(key) or _new_assignment(key, filename, row, lease, client_ip, "STATIC")
         assignment.update({"assignment_type": "STATIC", "filename": filename,
                            "last_seen": _now_iso(), "state": assignment.get("state", "ASSIGNED")})
-        pool = read_config_pool()
         meta = config_file_meta(filename, pool)
         if meta:
             meta.update({"status": "RESERVED", "assigned_device": key, "updated_at": _now_iso()})
-            write_config_pool(pool)
         assignments[key] = assignment
-        write_assignments(assignments)
+        write_allocation_state(pool, assignments)
         return assignment
 
 
@@ -1849,7 +2256,8 @@ def _record_dynamic_fetch(key: str, filename: str, body: bytes, status_code: int
     therefore assigned exclusively by ``reconcile_downloads``.
     """
     with _exclusive_lock(ALLOCATION_LOCK):
-        assignments = read_assignments()
+        state = read_provisioning_state()
+        assignments = state["devices"]
         assignment = assignments.get(key)
         if not assignment:
             return
@@ -1858,6 +2266,7 @@ def _record_dynamic_fetch(key: str, filename: str, body: bytes, status_code: int
         assignment["updated_at"] = now
         assignment["last_http_status"] = str(status_code)
         assignment["last_bytes_sent"] = len(body)
+        assignment["actual_bytes"] = len(body)
         assignment["fetch_times"] = _fetch_times_in_window(assignment, _safe_int(read_settings(), "repeated_fetch_window_minutes", 10))
         assignment["fetch_times"].append(now)
         assignment["fetch_count"] = int(assignment.get("fetch_count", 0) or 0) + 1
@@ -1870,16 +2279,14 @@ def _record_dynamic_fetch(key: str, filename: str, body: bytes, status_code: int
             assignment["delivery_state"] = "FETCHING"
             if assignment["fetch_count"] > _safe_int(read_settings(), "repeated_fetch_limit", 5):
                 assignment["state"] = "REPEATED_FETCH"
-        pool = read_config_pool()
-        meta = config_file_meta(filename, pool)
+        meta = state["configs"].get(filename)
         if meta:
             # Keep a reserved file protected until the delivery outcome is
             # reconciled from Nginx.
-            meta["status"] = "RESERVED"
+            meta["status"] = "ASSIGNED"
             meta["assigned_device"] = key
             meta["updated_at"] = now
-            write_config_pool(pool)
-        write_assignments(assignments)
+        commit_provisioning_state(state)
     append_history("FETCH_FAILED" if error else "FETCH", key, filename=filename,
                    http_status=status_code, bytes_sent=len(body), message=error)
 
@@ -1888,45 +2295,25 @@ def dynamic_config_result(client_ip: str) -> tuple[bytes | None, str, int]:
     settings = read_settings()
     if operating_mode(settings) != "ZTP_PROVISIONING":
         return None, f"{operating_mode(settings)} does not provide the ZTP resolver endpoint.", 404
-    row, profile, lease, reason = find_request_context(client_ip)
-    if reason != "OK" or not lease:
-        append_history(reason, ip=client_ip, message="Dynamic resolver did not find a unique active lease.")
-        return None, reason, 404
-    key = device_key(row, mac=lease.get("mac", ""), client_id=lease.get("client_id", ""), ip=client_ip)
-    if not key:
-        append_history("LEASE_NOT_FOUND", ip=client_ip)
+    lease = parse_leases().get(client_ip)
+    if not _lease_is_active(lease):
+        append_history("LEASE_NOT_FOUND", ip=client_ip,
+                       message="Resolver requires an active dhcpd.leases entry.")
         return None, "LEASE_NOT_FOUND", 404
-    source = row or profile or {}
-    kind = assignment_type(source, "AUTO")
-    if kind == "DHCP_ONLY":
-        # Legacy records are retained for migration/audit, but they are never
-        # created by the new resolver and never produce a config URL.
-        append_history("LEGACY_DHCP_ONLY", key, ip=client_ip,
-                       message="Legacy DHCP_ONLY record has no ZTP file assignment.")
-        return None, "LEGACY_DHCP_ONLY", 204
-    pool = sync_config_pool()
-    if kind == "STATIC":
-        filename, static_error = _static_assignment_error(source, pool)
-        if static_error:
-            if filename:
-                _ensure_static_runtime(key, source, filename, client_ip, lease)
-                _record_assignment_event(key, state="REVIEW_REQUIRED", status="FAILED", error=static_error)
-            append_history(static_error, key, filename=filename, ip=client_ip)
-            return None, static_error, 409
-        if not filename:
-            return None, "STATIC_CONFIG_ERROR", 409
-        _ensure_static_runtime(key, source, filename, client_ip, lease)
-    else:
-        assignment, reserve_error = reserve_auto_assignment(client_ip, row, profile, lease, key)
-        if reserve_error:
-            append_history(reserve_error, key, ip=client_ip)
-            return None, reserve_error, 409
-        filename = assignment.get("filename", "")
-        valid, file_error = _assignment_filename_valid(filename, pool)
-        if not valid:
-            _record_assignment_event(key, state="REVIEW_REQUIRED", status="FAILED", error=file_error)
-            append_history(file_error, key, filename=filename, ip=client_ip)
-            return None, file_error, 409
+    key = device_key(mac=lease.get("mac", ""))
+    if not key:
+        append_history("MAC_REQUIRED", ip=client_ip)
+        return None, "MAC_REQUIRED", 409
+    assignment, reserve_error = reserve_project_assignment(client_ip, lease)
+    if reserve_error:
+        return None, reserve_error, 409
+    filename = assignment.get("config") or assignment.get("filename", "")
+    pool = read_config_pool()
+    valid, file_error = _assignment_filename_valid(filename, pool)
+    if not valid:
+        _record_assignment_event(key, state="REVIEW_REQUIRED", status="REVIEW_REQUIRED", error=file_error)
+        append_history(file_error, key, filename=filename, ip=client_ip)
+        return None, file_error, 409
     _record_assignment_event(key, state="FETCHING", status="RESERVED")
     path = NGINX_DIR / filename
     try:
@@ -1944,7 +2331,8 @@ def dynamic_config_result(client_ip: str) -> tuple[bytes | None, str, int]:
                                 "assigned_checksum": pool_meta.get("checksum", config_sha256(path)),
                                 "assigned_file_size": path.stat().st_size,
                                 "delivery_state": "FETCHING", "state": "FETCHING",
-                                "status": "RESERVED", "updated_at": _now_iso()})
+                                "status": "ASSIGNED", "updated_at": _now_iso(),
+                                "first_fetch_at": current.get("first_fetch_at") or _now_iso()})
                 write_assignments(assignments)
     _record_dynamic_fetch(key, filename, body, 200)
     return body, filename, 200
@@ -2011,6 +2399,7 @@ def refresh_runtime_states() -> dict:
 def provisioning_summary() -> dict:
     assignments = refresh_runtime_states()
     pool = sync_config_pool()
+    state = read_provisioning_state()
     counts = {key: 0 for key in ["total", "available", "assigned", "delivered", "fetched", "dhcp_only", "pending_check", "completed", "failed"]}
     counts["total"] = len(pool)
     counts["available"] = sum(1 for item in pool if item.get("status") == "AVAILABLE")
@@ -2018,10 +2407,11 @@ def provisioning_summary() -> dict:
     counts["delivered"] = sum(1 for item in assignments.values() if item.get("state") == "DELIVERED")
     counts["fetched"] = counts["delivered"]  # compatibility alias for the v1 UI/API
     counts["pending_check"] = sum(1 for item in assignments.values() if item.get("state") in {"REVIEW_REQUIRED", "ASSIGNED_NO_FETCH", "PARTIAL_FETCH"})
-    counts["completed"] = sum(1 for item in assignments.values() if item.get("state") == "COMPLETED")
+    counts["completed"] = sum(1 for item in assignments.values() if item.get("state") in {"VERIFIED", "COMPLETED"})
     counts["failed"] = sum(1 for item in assignments.values() if item.get("state") in {"FAILED", "FETCH_FAILED", "DHCP_RETRY_LOOP", "MODEL_UNKNOWN", "MODEL_MISMATCH", "CONFIG_METADATA_REQUIRED"})
     alerts = [item for item in assignments.values() if item.get("state") in {"REVIEW_REQUIRED", "ASSIGNED_NO_FETCH", "FETCH_FAILED", "REPEATED_FETCH", "DHCP_RETRY_LOOP"}]
-    return {"counts": counts, "alerts": alerts, "assignments": assignments, "pool": pool}
+    return {"counts": counts, "alerts": alerts, "assignments": assignments, "pool": pool,
+            "project": state.get("project", {}), "validation_errors": project_validation_errors(state)}
 
 
 def operator_name() -> str:
@@ -2032,57 +2422,41 @@ def operator_name() -> str:
 
 
 def provisioning_rows() -> list[dict]:
-    summary = provisioning_summary()
-    assignments = summary["assignments"]
-    results = read_results()
-    leases = {} if not is_dhcp_mode() else parse_leases()
+    state = read_provisioning_state()
+    project = state.get("project", {})
     rows = []
-    seen = set()
-    for row in read_devices():
-        key = device_key(row)
-        seen.add(key)
-        assignment = assignments.get(key, {})
-        result = results.get(key, {})
-        lease = leases.get(row.get("ip_address", ""), {})
+    for key, device in state.get("devices", {}).items():
+        filename = device.get("config") or device.get("filename", "")
+        meta = state.get("configs", {}).get(filename, {})
         rows.append({
-            "device_key": key, "serial": row.get("serial_number", ""),
-            "mac": row.get("mac_address", "") or lease.get("mac", ""),
-            "client_id": row.get("client_id", "") or lease.get("client_id", ""),
-            "dhcp_ip": row.get("ip_address", ""),
-            "observed_model": row.get("device_type", "") or assignment.get("observed_model", ""),
-            "hostname": row.get("hostname", "") or assignment.get("hostname", ""),
-            "config_filename": assignment.get("filename", "") or row.get("specific_config_file", ""),
-            "assignment_type": assignment.get("assignment_type", assignment_type(row)),
-            "config_status": assignment.get("status", ""),
-            "state": assignment.get("state", "DHCP_SEEN"),
-            "request_count": assignment.get("request_count", 0),
-            "fetch_count": assignment.get("fetch_count", 0),
-            "http_status": assignment.get("last_http_status", ""),
-            "first_seen": assignment.get("first_seen", ""),
-            "assigned_at": assignment.get("assigned_at", ""),
-            "fetch_time": (assignment.get("fetch_times") or [""])[-1],
-            "verify_time": result.get("verify_time", ""),
-            "result": result.get("result", ""), "remarks": result.get("remarks", ""),
-            "last_error": assignment.get("last_error", ""),
+            "project": project.get("name", ""),
+            "sequence": device.get("sequence", ""),
+            "serial": device.get("serial", ""),
+            "mac": device.get("mac", ""),
+            "client_id": device.get("client_id", ""),
+            "option12": device.get("option12", ""),
+            "option60": device.get("option60", ""),
+            "detected_model": device.get("detected_model", device.get("observed_model", "")),
+            "first_dhcp_ip": device.get("first_dhcp_ip", device.get("dhcp_ip", "")),
+            "current_dhcp_ip": device.get("current_dhcp_ip", device.get("dhcp_ip", "")),
+            "config_filename": filename,
+            "expected_hostname": meta.get("hostname", device.get("hostname", "")),
+            "config_sha256": device.get("config_sha256", device.get("assigned_checksum", meta.get("checksum", ""))),
+            "state": device.get("state", ""),
+            "first_seen": device.get("first_seen", ""),
+            "last_seen": device.get("last_seen", ""),
+            "assigned_at": device.get("assigned_at", ""),
+            "first_fetch_at": device.get("first_fetch_at", ""),
+            "delivered_at": device.get("delivered_at", ""),
+            "verified_at": device.get("verified_at", ""),
+            "http_status": device.get("last_http_status", ""),
+            "expected_bytes": device.get("expected_bytes", device.get("assigned_file_size", "")),
+            "actual_bytes": device.get("actual_bytes", device.get("last_bytes_sent", "")),
+            "retry_count": device.get("retry_count", device.get("fetch_count", 0)),
+            "archived": bool(device.get("archived")),
+            "remarks": device.get("remarks", ""),
         })
-    for key, assignment in assignments.items():
-        if key in seen:
-            continue
-        result = results.get(key, {})
-        rows.append({
-            "device_key": key, "serial": "", "mac": assignment.get("mac", ""),
-            "client_id": assignment.get("client_id", ""), "dhcp_ip": assignment.get("dhcp_ip", ""),
-            "observed_model": assignment.get("observed_model", ""),
-            "hostname": assignment.get("hostname", ""), "config_filename": assignment.get("filename", ""),
-            "assignment_type": assignment.get("assignment_type", "AUTO"),
-            "config_status": assignment.get("status", ""), "state": assignment.get("state", ""),
-            "request_count": assignment.get("request_count", 0), "fetch_count": assignment.get("fetch_count", 0),
-            "http_status": assignment.get("last_http_status", ""), "first_seen": assignment.get("first_seen", ""),
-            "assigned_at": assignment.get("assigned_at", ""),
-            "fetch_time": (assignment.get("fetch_times") or [""])[-1],
-            "verify_time": result.get("verify_time", ""), "result": result.get("result", ""),
-            "remarks": result.get("remarks", ""), "last_error": assignment.get("last_error", ""),
-        })
+    rows.sort(key=lambda row: (int(row.get("sequence") or 0), row.get("mac", "")))
     return rows
 
 
@@ -2102,6 +2476,8 @@ def unified_client_rows() -> list[dict]:
     mode = operating_mode()
     if mode == "FILE_SERVER_ONLY":
         return []
+    if mode == "ZTP_PROVISIONING" and project_status() == "ARCHIVED":
+        return []
     reconcile_dhcp_events()
     reconcile_downloads()
     devices = read_devices()
@@ -2115,7 +2491,8 @@ def unified_client_rows() -> list[dict]:
         return rows.setdefault(identity, {"identity": identity, "device": "Unmapped client", "mac": "",
             "serial": "", "client_id": "", "dhcp_ip": "", "model": "", "config": "",
             "lease": "", "downloaded_file": "", "download_state": "", "state": "Seen",
-            "assignment_type": "", "can_release": False, "last_error": "", "request_id": ""})
+            "assignment_type": "", "can_release": False, "last_error": "", "request_id": "",
+            "device_key": "", "last_seen": "", "archived": False})
 
     for index, device in enumerate(devices):
         identity = _client_identity(client_id=device.get("client_id", ""), mac=device.get("mac_address", ""),
@@ -2132,7 +2509,8 @@ def unified_client_rows() -> list[dict]:
         row = get_row(identity)
         row.update({"mac": item.get("mac", "") or row["mac"], "client_id": item.get("client_id", "") or row["client_id"],
                     "dhcp_ip": item.get("dhcp_ip", "") or row["dhcp_ip"], "model": item.get("option60", "") or row["model"],
-                    "lease": item.get("last_event", "") or row["lease"], "request_count": item.get("request_count_total", 0)})
+                    "lease": item.get("last_event", "") or row["lease"], "request_count": item.get("request_count_total", 0),
+                    "last_seen": item.get("last_seen", "") or row["last_seen"]})
         if item.get("last_event") in {"DHCPACK", "DHCPREQUEST"}:
             row["state"] = "Seen"
 
@@ -2149,11 +2527,17 @@ def unified_client_rows() -> list[dict]:
         by_assignment[key] = identity
         row = get_row(identity)
         state = assignment.get("state", "DHCP_SEEN")
+        display_state = ("Verified" if state == "VERIFIED" else
+                         "Delivered" if state == "DELIVERED" else
+                         "Assigned" if state in {"ASSIGNED", "FETCHING"} else
+                         "Seen" if state in {"DHCP_SEEN", "LEASED"} else "Needs Attention")
         row.update({"config": assignment.get("filename", ""), "assignment_type": assignment.get("assignment_type", ""),
-                    "state": "Delivered" if state == "DELIVERED" else "Assigned" if state in {"ASSIGNED", "FETCHING", "PARTIAL_FETCH"} else "Needs Attention" if state not in {"DHCP_SEEN", "LEASED"} else "Seen",
+                    "state": display_state,
                     "last_error": assignment.get("last_error", ""), "can_release": assignment.get("assignment_type") == "AUTO" and state == "ASSIGNED",
                     "mac": assignment.get("mac", "") or row["mac"], "client_id": assignment.get("client_id", "") or row["client_id"],
-                    "dhcp_ip": assignment.get("dhcp_ip", "") or row["dhcp_ip"]})
+                    "dhcp_ip": assignment.get("current_dhcp_ip", assignment.get("dhcp_ip", "")) or row["dhcp_ip"],
+                    "device_key": key, "last_seen": assignment.get("last_seen", "") or row["last_seen"],
+                    "archived": bool(assignment.get("archived"))})
 
     for index, record in enumerate(downloads):
         identity = _client_identity(mac=record.get("mac", ""), client_id=record.get("client_id", ""),
@@ -2165,12 +2549,38 @@ def unified_client_rows() -> list[dict]:
             row["state"] = "Delivered" if mode == "ZTP_PROVISIONING" else "Downloaded"
         elif record.get("download_state"):
             row["state"] = "Needs Attention"
-    return list(rows.values())
+    visible = [row for row in rows.values() if not row.get("archived")]
+    try:
+        state_filter = request.args.get("state", "").strip().lower()
+        search = request.args.get("client_q", "").strip().lower()
+        from_time = _parse_time(request.args.get("from", ""))
+        to_time = _parse_time(request.args.get("to", ""))
+    except RuntimeError:
+        state_filter = search = ""; from_time = to_time = None
+    if state_filter:
+        visible = [row for row in visible if state_filter in str(row.get("state", "")).lower()]
+    if search:
+        fields = ("mac", "serial", "config", "dhcp_ip", "client_id", "device")
+        visible = [row for row in visible if any(search in str(row.get(field, "")).lower() for field in fields)]
+    if from_time or to_time:
+        filtered = []
+        for row in visible:
+            stamp = _parse_time(row.get("last_seen", ""))
+            if from_time and (not stamp or stamp < from_time):
+                continue
+            if to_time and (not stamp or stamp > to_time):
+                continue
+            filtered.append(row)
+        visible = filtered
+    visible.sort(key=lambda row: row.get("last_seen", ""), reverse=True)
+    return visible[:100]
 
 
-MAPPING_EXPORT_FIELDS = ["serial", "mac", "client_id", "dhcp_ip", "observed_model", "hostname",
-                         "config_filename", "assignment_type", "config_status", "first_seen",
-                         "assigned_at", "fetch_time", "verify_time", "result", "remarks"]
+MAPPING_EXPORT_FIELDS = ["project", "sequence", "serial", "mac", "client_id", "option12", "option60",
+                         "detected_model", "first_dhcp_ip", "current_dhcp_ip", "config_filename",
+                         "expected_hostname", "config_sha256", "state", "first_seen", "last_seen",
+                         "assigned_at", "first_fetch_at", "delivered_at", "verified_at", "http_status",
+                         "expected_bytes", "actual_bytes", "retry_count", "archived", "remarks"]
 HISTORY_EXPORT_FIELDS = ["timestamp", "device_key", "serial", "mac", "ip", "event_type",
                          "old_value", "new_value", "filename", "http_status", "operator", "message"]
 
@@ -2336,13 +2746,10 @@ def dynamic_config():
             checksum = config_sha256(path)
             expected_bytes = str(path.stat().st_size)
     try:
-        row, profile, lease, _ = find_request_context(client_ip)
-        source = row or profile or {}
-        assignment_kind = assignment_type(source, "AUTO")
-        key = device_key(row, mac=(lease or {}).get("mac", ""),
-                         client_id=(lease or {}).get("client_id", ""), ip=client_ip)
+        lease = parse_leases().get(client_ip) or {}
+        key = device_key(mac=lease.get("mac", ""))
         assignment = read_assignments().get(key, {})
-        assignment_kind = assignment.get("assignment_type", assignment_kind)
+        assignment_kind = assignment.get("assignment_type", "AUTO")
     except (JsonDataError, OSError):
         pass
     return Response(body, status=200, mimetype="text/plain", headers={
@@ -2354,6 +2761,48 @@ def dynamic_config():
 @app.route("/provisioning")
 def provisioning():
     return redirect(url_for("index", view="overview"))
+
+
+@app.route("/project/status", methods=["POST"])
+def project_status_update():
+    ok, message = set_project_status(request.form.get("status", ""), operator=operator_name())
+    flash(message, "success" if ok else "warning")
+    return redirect(url_for("index", view="overview"))
+
+
+@app.route("/provisioning/archive/<path:provision_key>", methods=["POST"])
+def archive_provisioning_client(provision_key):
+    ok, message = archive_project_client(provision_key, operator=operator_name())
+    flash(message, "success" if ok else "warning")
+    return redirect(url_for("index", view="overview"))
+
+
+@app.route("/provisioning/reset/<path:provision_key>", methods=["POST"])
+def reset_provisioning_client(provision_key):
+    ok, message = reset_project_client(
+        provision_key,
+        allow_delivered=request.form.get("confirm_delivered") == "yes",
+        operator=operator_name())
+    flash(message, "success" if ok else "warning")
+    return redirect(url_for("index", view="overview"))
+
+
+@app.route("/provisioning/verify/<path:provision_key>", methods=["POST"])
+def verify_provisioning_client(provision_key):
+    ok, message = verify_project_client(provision_key, remarks=request.form.get("remarks", "").strip(),
+                                        operator=operator_name())
+    flash(message, "success" if ok else "warning")
+    return redirect(url_for("index", view="overview"))
+
+
+@app.route("/provisioning/release-config/<path:filename>", methods=["POST"])
+def release_provisioning_config(filename):
+    if request.form.get("confirm_release") != "yes":
+        flash("Confirm config release after operator review.", "warning")
+        return redirect(url_for("index", view="configs"))
+    ok, message = release_review_config(filename, operator=operator_name())
+    flash(message, "success" if ok else "warning")
+    return redirect(url_for("index", view="configs"))
 
 
 @app.route("/provisioning/mode", methods=["POST"])
@@ -2398,6 +2847,7 @@ def provisioning_config_metadata():
         order = 0
     with _exclusive_lock(ALLOCATION_LOCK):
         pool = read_config_pool()
+        assignments = read_assignments()
         if hostname and any(item.get("hostname") == hostname and item.get("filename") != filename for item in pool):
             flash(f"Config hostname '{hostname}' is already used by another file.", "danger")
             return redirect(url_for("index", view="configs"))
@@ -2457,7 +2907,7 @@ def release_assignment(provision_key):
         if meta:
             meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
         assignments.pop(provision_key, None)
-        write_config_pool(pool); write_assignments(assignments)
+        write_allocation_state(pool, assignments)
     append_history("RELEASE_AUTO", provision_key, operator=operator_name(), filename=filename)
     flash("Auto Assignment released; config returned to AVAILABLE.", "success")
     return redirect(url_for("index", view="overview"))
@@ -2480,7 +2930,7 @@ def force_release_assignment(provision_key):
         if meta:
             meta.update({"status": "QUARANTINED", "assigned_device": "", "updated_at": _now_iso()})
         assignments.pop(provision_key, None)
-        write_config_pool(pool); write_assignments(assignments)
+        write_allocation_state(pool, assignments)
     append_history("FORCE_RELEASE", provision_key, operator=operator_name(), filename=filename, reason=reason)
     flash(f"{filename} moved to QUARANTINED. Review it before making it AVAILABLE again.", "warning")
     return redirect(url_for("index", view="overview"))
@@ -2541,6 +2991,7 @@ def index(view=None):
         pending_mode=pending_mode(settings), service_status=service_status(),
         active_leases=len(parse_leases()) if is_dhcp_mode(settings) else 0,
         download_errors=download_errors, recent_downloads=recent_downloads,
+        recent_history=read_history(200),
         device_runtime=read_device_runtime(), option60_log=dhcp_option60_lines(),
         dhcp_log="\n".join(LOG_SOURCES["dhcp"]()) if is_dhcp_mode(settings) else "",
         nginx_log="\n".join(LOG_SOURCES["nginx"]()),
@@ -2615,12 +3066,14 @@ def settings_save():
     save_mode = request.form.get("save_mode", "apply")
     if save_mode == "draft":
         write_settings(s)
+        sync_project_settings(s)
         flash("Draft saved. DHCP was not restarted.", "info")
         return redirect(url_for("index") + "#network-view")
     if is_dhcp_mode(s) and request.form.get("confirm_dhcp") != "yes":
         flash("Confirm that the DHCP pool is correct and does not overlap another DHCP server before applying.", "warning")
         return redirect(url_for("index"))
     write_settings(s)
+    sync_project_settings(s)
     ok, msg = deploy_dhcpd(generate_dhcpd())
     if not ok:
         # deploy_dhcpd() rolls back the runtime candidate itself. Keep the
@@ -2913,7 +3366,7 @@ def delete(hostname):
             static_meta = config_file_meta(removed.get("specific_config_file", ""), pool)
             if static_meta and static_meta.get("assigned_device") == key and static_meta.get("status") != "DELIVERED":
                 static_meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
-            write_config_pool(pool); write_assignments(assignments)
+            write_allocation_state(pool, assignments)
         append_history("DELETE_STATIC_MAPPING", key, operator=operator_name(), hostname=hostname)
     ok, msg = deploy_dhcpd(generate_dhcpd())
     flash(f"Deleted {hostname}. {msg}", "success" if ok else "warning")
@@ -2975,7 +3428,8 @@ def _csv_response(rows, fields, fname):
 def _persistent_export_paths() -> list[tuple[str, Path]]:
     paths = []
     for path in (DEVICES_JSON, STATIC_MAPPINGS_JSON, PROFILES_JSON, SETTINGS_JSON,
-                 CONFIG_POOL_JSON, ASSIGNMENTS_JSON, RESULTS_JSON, HISTORY_JSONL,
+                 PROVISIONING_STATE_JSON, CONFIG_POOL_JSON, ASSIGNMENTS_JSON,
+                 RESULTS_JSON, HISTORY_JSONL,
                  DEVICE_RUNTIME_JSON, DOWNLOAD_RECORDS_JSON, PARSER_CURSORS_JSON):
         if path.exists() and path.is_file():
             rel = f"state/{path.name}"
@@ -3061,6 +3515,12 @@ def restore_import_archive(raw: bytes) -> tuple[bool, str]:
                 handle.write(data); handle.flush(); os.fsync(handle.fileno())
             os.replace(tmp_name, target)
             created.append(target)
+        if ("state/provisioning_state.json" not in payloads and
+                ({"state/config_pool.json", "state/assignments.json"} & set(payloads))):
+            # Backward-compatible import: create the canonical state from the
+            # restored legacy stores without deleting either legacy file.
+            with _exclusive_lock(ALLOCATION_LOCK):
+                commit_provisioning_state(_legacy_provisioning_state())
         repairs = repair_state_consistency()
         append_history("IMPORT_ARCHIVE", operator="system", files=len(payloads), backup=str(backup_dir), repairs=len(repairs))
         suffix = f" Consistency repairs: {len(repairs)}." if repairs else ""
@@ -3240,12 +3700,13 @@ def _parse_nginx_line(line: str) -> dict | None:
 def _download_device_key(client_ip: str) -> str:
     leases = parse_leases() if is_dhcp_mode() else {}
     lease = leases.get(client_ip) or {}
-    for row in read_devices():
-        if row.get("ip_address") == client_ip or (lease.get("mac") and
-                row.get("mac_address", "").lower() == lease.get("mac", "").lower()) or (
-                lease.get("client_id") and row.get("client_id", "").lower() == lease.get("client_id", "").lower()):
-            return device_key(row)
-    return device_key(mac=lease.get("mac", ""), client_id=lease.get("client_id", ""), ip=client_ip)
+    mac_key = device_key(mac=lease.get("mac", ""))
+    if mac_key:
+        return mac_key
+    for key, assignment in read_assignments().items():
+        if assignment.get("current_dhcp_ip") == client_ip or assignment.get("dhcp_ip") == client_ip:
+            return key
+    return ""
 
 
 def _record_download_event(parsed: dict) -> dict:
@@ -3282,14 +3743,14 @@ def _record_download_event(parsed: dict) -> dict:
     records[request_id] = record
     write_download_records(records)
     key = _download_device_key(client_ip)
-    history_event = {"event_type": "HTTP_DOWNLOAD", "filename": filename,
+    history_event = {"event_type": state if is_ztp else "HTTP_DOWNLOAD", "filename": filename,
                      "ip": client_ip, "http_status": status_code,
                      "bytes_sent": actual, "expected_bytes": expected,
                      "state": state, "request_id": request_id}
     if is_ztp and key:
         with _exclusive_lock(ALLOCATION_LOCK):
-            assignments = read_assignments()
-            pool = read_config_pool()
+            provisioning_state = read_provisioning_state()
+            assignments = provisioning_state["devices"]
             assignment = assignments.get(key)
             if not assignment and filename:
                 # A static serial mapping can be identified by its assigned
@@ -3299,10 +3760,12 @@ def _record_download_event(parsed: dict) -> dict:
             if assignment and (not filename or assignment.get("filename") == filename):
                 assignment.update({"last_http_status": str(status_code), "last_bytes_sent": actual,
                                    "expected_bytes": expected, "last_download_at": _now_iso(),
-                                   "delivery_state": state, "updated_at": _now_iso()})
+                                   "actual_bytes": actual, "delivery_state": state,
+                                   "updated_at": _now_iso()})
                 if state == "DELIVERED":
-                    assignment.update({"state": "DELIVERED", "status": "DELIVERED"})
-                    meta = config_file_meta(assignment.get("filename", filename), pool)
+                    assignment.update({"state": "DELIVERED", "status": "DELIVERED",
+                                       "delivered_at": assignment.get("delivered_at") or _now_iso()})
+                    meta = provisioning_state["configs"].get(assignment.get("filename", filename))
                     if meta:
                         meta.update({"status": "DELIVERED", "usage": "Auto Pool" if assignment.get("assignment_type") == "AUTO" else "Static",
                                      "assigned_checksum": assignment.get("assigned_checksum", meta.get("checksum", "")),
@@ -3310,9 +3773,8 @@ def _record_download_event(parsed: dict) -> dict:
                 elif state == "PARTIAL_FETCH":
                     assignment.update({"state": "PARTIAL_FETCH", "status": "RESERVED", "last_error": "HTTP 200 but bytes are incomplete"})
                 else:
-                    assignment.update({"state": "FETCH_FAILED", "status": "RESERVED", "last_error": f"HTTP {status_code}"})
-                write_assignments(assignments)
-                write_config_pool(pool)
+                    assignment.update({"state": "FETCH_FAILED", "status": "ASSIGNED", "last_error": f"HTTP {status_code}"})
+                commit_provisioning_state(provisioning_state)
                 history_event["device_key"] = key
     append_history(history_event.pop("event_type"), key, **history_event)
     return record
@@ -3484,14 +3946,33 @@ def config_view(fname):
                            size=size, version=VERSION)
 
 
+@app.route("/configs/")
+def config_directory():
+    if operating_mode() == "ZTP_PROVISIONING":
+        return Response("Direct config listing is disabled in ZTP_PROVISIONING; use /ztp/config.\n",
+                        status=403, mimetype="text/plain")
+    files = []
+    for filename in list_configs():
+        path = NGINX_DIR / filename
+        try:
+            files.append({"filename": filename, "size": path.stat().st_size})
+        except OSError:
+            continue
+    return render_template("config_directory.html", files=files, version=VERSION)
+
+
 @app.route("/configs/<path:fname>")
 def serve_config(fname):
+    if operating_mode() == "ZTP_PROVISIONING":
+        return Response("Direct config download is disabled in ZTP_PROVISIONING; use /ztp/config.\n",
+                        status=403, mimetype="text/plain")
     return send_from_directory(NGINX_DIR, fname)
 
 
 def main():
     host = os.environ.get("ZTP_HOST", "0.0.0.0")
     port = int(os.environ.get("ZTP_PORT", "8080"))
+    migrate_provisioning_state()
     repair_state_consistency()
     if DEV_MODE:
         app.run(host=host, port=port, debug=True)
