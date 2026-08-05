@@ -19,6 +19,9 @@ option tftp-server-name "{{ vm_ip }}";
 
 subnet {{ subnet }} netmask {{ netmask }} {
     range {{ range_low }} {{ range_high }};
+    # Persist raw DHCP Option 60 in each lease. The application reads this
+    # vendor-string as its authoritative provisioning identity source.
+    set vendor-string = option vendor-class-identifier;
 {% if mode == "ZTP_PROVISIONING" %}
 {% set ns = namespace(first=true) %}
 {% for d in serial_devices %}
@@ -43,22 +46,6 @@ subnet {{ subnet }} netmask {{ netmask }} {
     }
 {% set ns.first = false %}
 {% endif %}
-{% endfor %}
-{% for d in mac_devices %}
-    host {{ d.hostname }} {
-        hardware ethernet {{ d.mac_address }};
-        fixed-address {{ d.ip_address }};
-        option NEW_OP.transfer-mode "http";
-        option NEW_OP.config-file-name "ztp/config";
-    }
-{% endfor %}
-{% for d in mac_auto_devices %}
-    host {{ d.hostname }} {
-        hardware ethernet {{ d.mac_address }};
-        fixed-address {{ d.ip_address }};
-        option NEW_OP.transfer-mode "http";
-        option NEW_OP.config-file-name "ztp/config";
-    }
 {% endfor %}
 {% elif mode == "DHCP_FILE_SERVER" %}
 {# DHCP + File Server only provides network parameters. #}

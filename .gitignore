@@ -10,10 +10,13 @@ static_mappings.json
 generic_profiles.json
 config_pool.json
 assignments.json
+provisioning_state.json
 results.json
 history.jsonl
+device_runtime.json
 download_records.json
 parser_cursors.json
+migration.json
 download_records.json.*
 parser_cursors.json.*
 .allocation.lock

@@ -86,7 +86,7 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
         app.commit_provisioning_state(state)
         body, detail, status = app.dynamic_config_result("192.168.250.10")
         self.assertIsNone(body)
-        self.assertEqual((detail, status), ("CONFIG_POOL_EMPTY", 409))
+        self.assertEqual((detail, status), ("OPTION60_NOT_CAPTURED", 409))
         self.assertEqual(app.read_assignments(), {})
 
     def test_nginx_reconciliation_promotes_only_complete_download(self):

@@ -87,51 +87,66 @@ class ProvisioningSafetyTests(unittest.TestCase):
 
     def test_dynamic_resolver_dhcp_only_and_auto(self):
         self.add_configs(["auto.conf"])
-        app.LEASES_FILE.write_text("lease 192.168.250.10 { hardware ethernet aa:bb:cc:dd:ee:01; binding state active; }", encoding="utf-8")
+        app.LEASES_FILE.write_text('lease 192.168.250.10 { hardware ethernet aa:bb:cc:dd:ee:01; '
+                                   'binding state active; set vendor-string = '
+                                   '"Juniper-ex4100-h-12mp-GE4825AW015"; }', encoding="utf-8")
         app.DEVICES_JSON.write_text("[]", encoding="utf-8")
-        app.PROFILES_JSON.write_text('[{"label":"auto","vendor_class":"EX4100","match_mode":"contains","config_file":"","assignment_type":"AUTO","option60_confirmed":"yes"}]', encoding="utf-8")
-        app.SYSLOG_FILE.write_text("dhcpd vendor-class-identifier \"EX4100\" 192.168.250.10", encoding="utf-8")
+        app.PROFILES_JSON.write_text('[{"label":"auto","vendor_class":"Juniper-ex4100-h-12mp-",'
+                                     '"vendor_prefix":"Juniper-ex4100-h-12mp-","device_model":"EX4100-H-12MP",'
+                                     '"match_mode":"contains","config_file":"","assignment_type":"AUTO",'
+                                     '"pool_name":"default","option60_confirmed":"yes"}]', encoding="utf-8")
         body, filename, status = app.dynamic_config_result("192.168.250.10")
         self.assertEqual((filename, status), ("auto.conf", 200))
         self.assertIn(b"root-authentication", body)
         body2, filename2, status2 = app.dynamic_config_result("192.168.250.10")
         self.assertEqual((filename2, status2, body2), (filename, status, body))
 
-    def test_project_resolver_ignores_static_model_mapping(self):
+    def test_project_resolver_prefers_serial_override(self):
         self.add_configs(["static.conf", "auto.conf"])
         pool = app.read_config_pool()
-        pool[0]["supported_models"] = ["EX4100-24T"]
+        pool[0]["supported_models"] = ["EX4100-H-12MP"]
+        pool[0]["device_model"] = "EX4100-H-12MP"
         pool[0]["allow_any_model"] = False
-        pool[1]["supported_models"] = []
+        pool[1]["supported_models"] = ["EX4100-H-12MP"]
+        pool[1]["device_model"] = "EX4100-H-12MP"
         app.write_config_pool(pool)
-        app.LEASES_FILE.write_text("lease 192.168.250.10 { hardware ethernet aa:bb:cc:dd:ee:02; binding state active; }", encoding="utf-8")
-        app.DEVICES_JSON.write_text('[{"match_method":"mac","mac_address":"aa:bb:cc:dd:ee:02","hostname":"edge-2","device_type":"EX4100-48T","ip_address":"192.168.250.10","specific_config_file":"static.conf","assignment_type":"STATIC"}]', encoding="utf-8")
-        app.PROFILES_JSON.write_text('[{"label":"fallback","vendor_class":"EX4100","match_mode":"contains","assignment_type":"AUTO","option60_confirmed":"yes"}]', encoding="utf-8")
+        app.LEASES_FILE.write_text('lease 192.168.250.10 { hardware ethernet aa:bb:cc:dd:ee:02; '
+                                   'binding state active; set vendor-string = '
+                                   '"Juniper-ex4100-h-12mp-GE4825AW015"; }', encoding="utf-8")
+        app.DEVICES_JSON.write_text('[{"match_method":"serial","serial_number":"GE4825AW015",'
+                                    '"mac_address":"","hostname":"GE4825AW015","device_type":"EX4100-H-12MP",'
+                                    '"expected_model":"EX4100-H-12MP","ip_address":"","specific_config_file":"static.conf",'
+                                    '"assignment_type":"STATIC","option60_confirmed":"yes"}]', encoding="utf-8")
+        app.PROFILES_JSON.write_text('[{"label":"fallback","vendor_class":"Juniper-ex4100-h-12mp-",'
+                                     '"vendor_prefix":"Juniper-ex4100-h-12mp-","device_model":"EX4100-H-12MP",'
+                                     '"match_mode":"contains","assignment_type":"AUTO","pool_name":"default",'
+                                     '"option60_confirmed":"yes"}]', encoding="utf-8")
         body, filename, status = app.dynamic_config_result("192.168.250.10")
         self.assertEqual((filename, status), ("static.conf", 200))
         self.assertIn(b"root-authentication", body)
-        self.assertEqual("static.conf", app.read_assignments()["mac:aa:bb:cc:dd:ee:02"]["filename"])
+        self.assertEqual("static.conf", app.read_assignments()["serial:ge4825aw015"]["filename"])
 
-    def test_static_validation_remains_but_empty_project_pool_is_not_assigned(self):
-        row = {"match_method": "mac", "mac_address": "aa:bb:cc:dd:ee:03",
-               "hostname": "edge-3", "assignment_type": "STATIC"}
+    def test_override_validation_and_empty_profile_pool_fail_closed(self):
+        row = {"match_method": "serial", "serial_number": "GE4825AW017", "mac_address": "",
+               "hostname": "GE4825AW017", "device_type": "EX4400", "expected_model": "EX4400",
+               "assignment_type": "STATIC", "option60_confirmed": "yes"}
         errors = app.validate_device_row(row, [], settings=app.DEFAULT_SETTINGS)
         self.assertTrue(any("requires a specific config file" in error for error in errors))
         app.LEASES_FILE.write_text(
-            "lease 192.168.250.11 { hardware ethernet aa:bb:cc:dd:ee:03; binding state active; }",
+            'lease 192.168.250.11 { hardware ethernet aa:bb:cc:dd:ee:03; binding state active; '
+            'set vendor-string = "Juniper-ex4400-GE4825AW017"; }',
             encoding="utf-8")
         app.PROFILES_JSON.write_text(
-            '[{"label":"empty","vendor_class":"EX4400","match_mode":"contains",'
-            '"assignment_type":"AUTO","option60_confirmed":"yes"}]', encoding="utf-8")
-        app.SYSLOG_FILE.write_text(
-            'dhcpd vendor-class-identifier "EX4400" 192.168.250.11', encoding="utf-8")
+            '[{"label":"empty","vendor_class":"Juniper-ex4400-","vendor_prefix":"Juniper-ex4400-",'
+            '"device_model":"EX4400","match_mode":"contains","assignment_type":"AUTO",'
+            '"pool_name":"empty","option60_confirmed":"yes"}]', encoding="utf-8")
         state = app.read_provisioning_state()
         state["project"].update({"status": "ACTIVE", "expected_devices": 0})
         app.commit_provisioning_state(state)
         body, reason, status = app.dynamic_config_result("192.168.250.11")
         self.assertIsNone(body)
-        self.assertEqual((reason, status), ("CONFIG_POOL_EMPTY", 409))
-        self.assertNotIn("mac:aa:bb:cc:dd:ee:03", app.read_assignments())
+        self.assertEqual((reason, status), ("PROFILE_POOL_EMPTY", 409))
+        self.assertNotIn("serial:ge4825aw017", app.read_assignments())
 
     def test_json_schema_error_and_file_server_only(self):
         app.DEVICES_JSON.write_text("[1]", encoding="utf-8")

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — vendor-neutral Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v26.09.2]
+ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.0]
 Author: binh.trinh
 
-Matching (method-driven, not model-hardcoded):
-  - Specific "By Serial" -> if/elsif  option vendor-class-identifier ~= "<serial>$"
-  - Specific "By MAC"     -> host { hardware ethernet ...; }
-  - Generic Profile       -> elsif option vendor-class-identifier ~= "<vendor-class>"
+Matching:
+  - DHCP Option 60 is persisted in dhcpd.leases as vendor-string.
+  - Serial Number is the only provisioning identity.
+  - Device Override wins over an exact-prefix Vendor Profile.
+  - Config allocation is fail-closed inside one model-isolated named pool.
 File-server advertised via Option 66 (tftp-server-name).
 
-v26.09.2: atomic MAC-first project allocation, retry-safe config reuse, allocation
-review/release controls, project-aware config access, and CSV/XLSX mapping workflow.
+v27.0.0: serial-first identity, lease-backed Option 60 capture, model-isolated
+pools, simplified three-result UI, deployment reports and safe workspace reset.
 
 Run:
   ZTP_DEV=1 python app.py            # dev (Flask reloader)
@@ -138,6 +139,8 @@ DEFAULT_SETTINGS = {
 }
 
 ALLOWED_EXT   = {".txt", ".conf"}
+# MAC remains readable for legacy migration only. New Device Overrides are
+# always exact-serial rules and MAC is observation data, never allocation data.
 MATCH_METHODS = ["serial", "mac"]
 OPERATING_MODES = ["ZTP_PROVISIONING", "DHCP_FILE_SERVER", "FILE_SERVER_ONLY"]
 LEGACY_MODE_MAP = {"FULL_ZTP": "ZTP_PROVISIONING"}
@@ -157,12 +160,18 @@ SERIAL_RE       = re.compile(r"^[A-Za-z0-9]+$")
 VENDOR_CLASS_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 MAC_RE          = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 PROFILE_REGEX_TEXT_RE = re.compile(r'^[^\r\n"]{1,160}$')
-DEVICE_FIELDS = ["match_method", "serial_number", "mac_address", "device_type",
+KNOWN_VENDOR_PREFIXES = {
+    "juniper-ex4100-h-12mp-": ("EX4100-H-12MP", "OXISANTA_EX4100_H_12MP"),
+    "juniper-ex4100-24p-": ("EX4100-24P", "OXISANTA_EX4100_24P"),
+    "juniper-ex4100-24t-": ("EX4100-24T", "OXISANTA_EX4100_24T"),
+}
+DEVICE_FIELDS = ["match_method", "serial_number", "mac_address", "device_type", "expected_model",
                  "hostname", "ip_address", "mgmt_ip", "client_id", "compatibility_group",
                  "specific_config_file", "assignment_type", "pool_name", "option60_confirmed"]
 PROFILE_MATCH_MODES = ["contains", "regex"]
-PROFILE_FIELDS = ["label", "vendor_class", "match_mode", "config_file", "assignment_type",
-                  "pool_name", "compatibility_group", "option60_confirmed"]
+PROFILE_FIELDS = ["label", "vendor_class", "vendor_prefix", "device_model", "match_mode",
+                  "config_file", "assignment_type", "pool_name", "compatibility_group",
+                  "option60_confirmed"]
 SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "range_high",
                    "internet_interface", "ztp_interface", "global_mode", "operating_mode",
                    "active_mode", "pending_mode",
@@ -171,7 +180,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "26.09.2"   # manual /ztp/config file access
+VERSION = "27.0.0"
 
 
 class JsonDataError(RuntimeError):
@@ -361,6 +370,7 @@ def read_devices():
         row.setdefault("option60_confirmed", "")
         row.setdefault("client_id", "")
         row.setdefault("compatibility_group", "")
+        row.setdefault("expected_model", row.get("device_type", ""))
         # Legacy rows without a dedicated file are DHCP_ONLY (they may still
         # be tracked in the inventory, but must not accidentally shadow a
         # Generic Profile as an incomplete STATIC rule).
@@ -380,6 +390,19 @@ def read_profiles():
         row.setdefault("option60_confirmed", "")
         row.setdefault("assignment_type", "STATIC" if row.get("config_file") else "DHCP_ONLY")
         row.setdefault("pool_name", "")
+        # Explicit prefix/model fields are the v27 schema. Literal legacy
+        # Contains profiles are safe to interpret as prefixes; legacy Regex
+        # profiles remain readable but are never created by the main UI.
+        row.setdefault("vendor_prefix", row.get("vendor_class", "")
+                       if row.get("match_mode", "contains") == "contains" else "")
+        row.setdefault("device_model", row.get("compatibility_group", ""))
+        known = KNOWN_VENDOR_PREFIXES.get(str(row.get("vendor_prefix") or "").lower())
+        if known:
+            row["device_model"] = row.get("device_model") or known[0]
+            if not row.get("pool_name") or row.get("pool_name") == "OXISANTA_EX4100":
+                row["pool_name"] = known[1]
+            if row.get("assignment_type") == "DHCP_ONLY" and row.get("pool_name"):
+                row["assignment_type"] = "AUTO"
     return rows
 def write_profiles(rows): _atomic_write_json(PROFILES_JSON, rows)
 
@@ -408,21 +431,79 @@ def _vendor_overlap(left: str, right: str) -> bool:
 
 
 def profile_match_expression(profile: dict) -> str:
-    """Build the DHCP regex while keeping legacy profiles literal by default."""
+    """Build an anchored DHCP regex for v27 prefix profiles.
+
+    Legacy regex profiles are retained only for migration compatibility.
+    """
+    prefix = str(profile.get("vendor_prefix") or "").strip()
+    if prefix:
+        return "^" + re.escape(prefix) + r"[A-Za-z0-9]+$"
     value = profile.get("vendor_class", "")
     if profile.get("match_mode", "contains") == "regex":
         return value
     return re.escape(value)
 
 
+def profile_vendor_prefix(profile: dict) -> str:
+    """Return the literal vendor/model prefix used for serial extraction."""
+    prefix = str(profile.get("vendor_prefix") or "").strip()
+    if prefix:
+        return prefix
+    if profile.get("match_mode", "contains") == "contains":
+        return str(profile.get("vendor_class") or "").strip()
+    return ""
+
+
+def parse_option60_identity(raw_value: str, profiles=None) -> tuple[dict | None, str]:
+    """Parse one raw Option 60 into prefix, serial, model and exact profile.
+
+    The serial suffix is deliberately strict and the profile comparison is an
+    exact case-insensitive prefix match. Syslog is never consulted here.
+    """
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None, "OPTION60_NOT_CAPTURED"
+    match = re.fullmatch(r"(?P<prefix>.+-)(?P<serial>[A-Za-z0-9]+)", raw)
+    if not match:
+        return None, "SERIAL_NOT_PARSED"
+    prefix = match.group("prefix")
+    serial = match.group("serial")
+    if not SERIAL_RE.fullmatch(serial):
+        return None, "SERIAL_NOT_PARSED"
+    profile_rows = read_profiles() if profiles is None else profiles
+    matched = [profile for profile in profile_rows
+               if profile_vendor_prefix(profile).lower() == prefix.lower()]
+    if len(matched) > 1:
+        return None, "AMBIGUOUS_PROFILE"
+    profile = matched[0] if matched else None
+    return {
+        "raw_option60": raw,
+        "vendor_prefix": prefix,
+        "serial": serial,
+        "device_model": str((profile or {}).get("device_model") or
+                            (profile or {}).get("compatibility_group") or "").strip(),
+        "profile": profile,
+    }, ""
+
+
 def profiles_matching_vendor(vendor: str, profiles=None) -> list[dict]:
-    """Return Generic Profiles matching one raw DHCP Option 60 value."""
+    """Return profiles matching one raw Option 60 value.
+
+    v27 profiles use an exact literal prefix. Legacy regex remains available
+    for migration/read compatibility only.
+    """
     vendor = str(vendor or "").strip()
     if not vendor:
         return []
     profiles = read_profiles() if profiles is None else profiles
     matched = []
     for profile in profiles:
+        prefix = profile_vendor_prefix(profile)
+        if prefix:
+            suffix = vendor[len(prefix):] if vendor.lower().startswith(prefix.lower()) else ""
+            if suffix and SERIAL_RE.fullmatch(suffix):
+                matched.append(profile)
+            continue
         expression = profile_match_expression(profile)
         try:
             if re.search(expression, vendor, re.I):
@@ -557,6 +638,10 @@ def validate_device_row(row: dict, existing=None, settings=None) -> list[str]:
         errors.append("Legacy DHCP_ONLY records cannot specify a config file.")
     if kind == "STATIC" and not row.get("specific_config_file"):
         errors.append("STATIC assignment requires a specific config file; use AUTO for resolver allocation.")
+    if method == "serial" and not str(row.get("expected_model") or row.get("device_type") or "").strip():
+        errors.append("Expected Model is required for a Device Override.")
+    if method == "serial" and kind == "AUTO" and not str(row.get("pool_name") or "").strip():
+        errors.append("Named Pool is required for an AUTO Device Override.")
     for field in ("ip_address", "mgmt_ip"):
         value = row.get(field, "")
         if value and not _valid_ipv4(value):
@@ -589,9 +674,28 @@ def validate_profile_row(profile: dict, existing=None, settings=None) -> list[st
     existing = read_profiles() if existing is None else existing
     settings = read_settings() if settings is None else settings
     errors = []
-    vendor = profile.get("vendor_class", "")
+    prefix = str(profile.get("vendor_prefix") or "").strip()
+    vendor = prefix or profile.get("vendor_class", "")
     mode = profile.get("match_mode", "contains")
     kind = assignment_type(profile, "STATIC")
+    if prefix:
+        if not prefix.endswith("-"):
+            errors.append("Vendor Prefix must end with '-'.")
+        if not VENDOR_CLASS_RE.fullmatch(prefix):
+            errors.append("Vendor Prefix may contain only letters, digits, '.', '_' and '-'.")
+        if not str(profile.get("device_model") or "").strip():
+            errors.append("Device Model is required.")
+        if not str(profile.get("pool_name") or "").strip():
+            errors.append("Config Pool is required.")
+        if kind != "AUTO":
+            errors.append("New Vendor Profiles must use a named AUTO pool.")
+        if profile.get("config_file"):
+            errors.append("Vendor Profiles cannot select an exact config file.")
+        for other in existing:
+            other_prefix = profile_vendor_prefix(other)
+            if other_prefix and other_prefix.lower() == prefix.lower():
+                errors.append(f"Vendor Prefix '{prefix}' is already used by another profile.")
+        return list(dict.fromkeys(errors))
     if not vendor:
         errors.append("Vendor class is required.")
     elif kind not in ASSIGNMENT_TYPES:
@@ -760,7 +864,7 @@ def _read_list_store(path: Path, default: list) -> list:
 def _default_provisioning_state() -> dict:
     settings = read_settings()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "project": {
             "name": settings.get("deployment_name", "ztp-deployment"),
             "status": "PAUSED",
@@ -785,7 +889,7 @@ def _normalize_provisioning_state(value: dict) -> dict:
     project["status"] = status if status in PROJECT_STATUSES else "PAUSED"
     project.setdefault("name", read_settings().get("deployment_name", "ztp-deployment"))
     project.setdefault("expected_devices", _safe_int(read_settings(), "project_expected_devices", 150))
-    state["schema_version"] = 1
+    state["schema_version"] = max(1, int(state.get("schema_version", 1) or 1))
     state["project"] = project
     state["configs"] = configs
     state["devices"] = devices
@@ -853,6 +957,81 @@ def migrate_provisioning_state() -> bool:
     append_history("PROVISIONING_STATE_MIGRATED", operator="system",
                    configs=len(state["configs"]), devices=len(state["devices"]),
                    backup=str(backup_dir))
+    return True
+
+
+def migrate_serial_first_state() -> bool:
+    """Migrate legacy MAC keys to serial keys without freeing any config.
+
+    Records with no trustworthy serial remain present but fail closed with
+    SERIAL_NOT_PARSED. A complete backup is created before the atomic commit.
+    """
+    if not PROVISIONING_STATE_JSON.exists():
+        migrate_provisioning_state()
+    raw = _read_object_store(PROVISIONING_STATE_JSON, {})
+    if int(raw.get("schema_version", 1) or 1) >= 2:
+        return False
+    with _exclusive_lock(ALLOCATION_LOCK):
+        raw = _read_object_store(PROVISIONING_STATE_JSON, {})
+        if int(raw.get("schema_version", 1) or 1) >= 2:
+            return False
+        backup_dir = DATA_DIR / "migration-backup-serial-v2"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for source in (PROVISIONING_STATE_JSON, CONFIG_POOL_JSON, ASSIGNMENTS_JSON,
+                       DEVICES_JSON, STATIC_MAPPINGS_JSON, PROFILES_JSON):
+            target = backup_dir / source.name
+            if source.exists() and not target.exists():
+                shutil.copy2(source, target)
+        state = _normalize_provisioning_state(raw)
+        for filename, meta in state["configs"].items():
+            if re.match(r"^OXISANTA_EX4100_PC\d+", filename, re.I):
+                meta.update({"device_model": "EX4100-H-12MP",
+                             "supported_models": ["EX4100-H-12MP"],
+                             "pool_name": "OXISANTA_EX4100_H_12MP",
+                             "auto_pool_enabled": True})
+        migrated_devices = {}
+        key_changes = {}
+        for old_key, original in state["devices"].items():
+            item = dict(original)
+            serial = str(item.get("serial") or "").strip()
+            if not serial and str(old_key).startswith("serial:"):
+                serial = str(old_key).split(":", 1)[1]
+            if not serial:
+                identity, _ = parse_option60_identity(item.get("option60") or item.get("raw_option60") or "")
+                serial = str((identity or {}).get("serial") or "")
+            if serial and SERIAL_RE.fullmatch(serial):
+                new_key = device_key(serial=serial)
+                item.update({"device_key": new_key, "serial": serial,
+                             "observed_mac": item.get("observed_mac") or item.get("mac", "")})
+                if new_key in migrated_devices and migrated_devices[new_key].get("filename") != item.get("filename"):
+                    item.update({"state": "AMBIGUOUS_SERIAL_MAPPING", "status": "ERROR",
+                                 "last_error": "AMBIGUOUS_SERIAL_MAPPING"})
+                    new_key = f"legacy:{old_key}"
+                    item["device_key"] = new_key
+                migrated_devices[new_key] = item
+                key_changes[str(old_key)] = new_key
+            else:
+                item.update({"state": "SERIAL_NOT_PARSED", "status": "ERROR",
+                             "last_error": "SERIAL_NOT_PARSED",
+                             "observed_mac": item.get("observed_mac") or item.get("mac", "")})
+                migrated_devices[str(old_key)] = item
+        for meta in state["configs"].values():
+            old_owner = str(meta.get("assigned_device") or "")
+            new_owner = key_changes.get(old_owner, old_owner)
+            if new_owner:
+                meta["assigned_device"] = new_owner
+                if new_owner.startswith("serial:"):
+                    meta["assigned_serial"] = migrated_devices.get(new_owner, {}).get(
+                        "serial", new_owner.split(":", 1)[1])
+            else:
+                meta.setdefault("assigned_serial", "")
+        state["devices"] = migrated_devices
+        state["schema_version"] = 2
+        commit_provisioning_state(state)
+        profiles = read_profiles()
+        write_profiles(profiles)
+    append_history("SERIAL_FIRST_MIGRATION", operator="system",
+                   devices=len(state["devices"]), backup=str(backup_dir))
     return True
 
 
@@ -972,11 +1151,12 @@ def device_key(row: dict | None = None, *, serial: str = "", mac: str = "",
     mac = mac or row.get("mac_address", "")
     client_id = client_id or row.get("client_id", "")
     ip = ip or row.get("ip_address", "")
-    normalized_mac = normalize_mac(mac)
-    if normalized_mac:
-        return f"mac:{normalized_mac}"
     if serial:
         return f"serial:{str(serial).strip().lower()}"
+    normalized_mac = normalize_mac(mac)
+    if normalized_mac:
+        # Legacy-only fallback. New allocation rejects records without serial.
+        return f"mac:{normalized_mac}"
     if client_id:
         return f"client-id:{str(client_id).strip().lower()}"
     return f"ip:{str(ip).strip()}" if ip else ""
@@ -1242,6 +1422,15 @@ def _metadata_models(value) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def config_device_model(meta: dict) -> str:
+    """Return the single v27 model, with a non-destructive legacy fallback."""
+    model = str(meta.get("device_model") or "").strip()
+    if model:
+        return model
+    legacy = _metadata_models(meta.get("supported_models"))
+    return legacy[0] if len(legacy) == 1 else ""
+
+
 def sync_config_pool() -> list[dict]:
     """Discover files without deleting metadata or changing assigned state."""
     now = _now_iso()
@@ -1255,8 +1444,19 @@ def sync_config_pool() -> list[dict]:
             if name and name not in by_name:
                 row["filename"] = name
                 row["supported_models"] = _metadata_models(row.get("supported_models"))
+                row.setdefault("device_model", config_device_model(row))
+                if (not row.get("device_model") and
+                        re.match(r"^OXISANTA_EX4100_PC\d+", name, re.I)):
+                    row["device_model"] = "EX4100-H-12MP"
+                    row["supported_models"] = ["EX4100-H-12MP"]
+                    changed = True
                 row.setdefault("compatibility_group", "")
                 row.setdefault("pool_name", "")
+                if (row.get("pool_name") in {"", "OXISANTA_EX4100"} and
+                        re.match(r"^OXISANTA_EX4100_PC\d+", name, re.I)):
+                    row["pool_name"] = "OXISANTA_EX4100_H_12MP"
+                    row["auto_pool_enabled"] = True
+                    changed = True
                 row.setdefault("hostname", "")
                 row.setdefault("allocation_order", len(by_name) + 1)
                 row.setdefault("status", "AVAILABLE")
@@ -1267,6 +1467,7 @@ def sync_config_pool() -> list[dict]:
                 row.setdefault("auto_pool_enabled", False)
                 row.setdefault("allow_any_model", False)
                 row.setdefault("usage", "Not Assigned")
+                row.setdefault("assigned_serial", str(row.get("assigned_device", "")).removeprefix("serial:"))
                 row.setdefault("file_size", 0)
                 by_name[name] = row
             elif name:
@@ -1274,11 +1475,17 @@ def sync_config_pool() -> list[dict]:
         for index, filename in enumerate(list_configs(), start=1):
             path = NGINX_DIR / filename
             if filename not in by_name:
+                is_h12mp = bool(re.match(r"^OXISANTA_EX4100_PC\d+", filename, re.I))
                 by_name[filename] = {
-                    "filename": filename, "hostname": "", "supported_models": [],
-                    "compatibility_group": "", "checksum": config_sha256(path),
+                    "filename": filename, "hostname": "",
+                    "supported_models": ["EX4100-H-12MP"] if is_h12mp else [],
+                    "device_model": "EX4100-H-12MP" if is_h12mp else "",
+                    "compatibility_group": "",
+                    "pool_name": "OXISANTA_EX4100_H_12MP" if is_h12mp else "",
+                    "checksum": config_sha256(path),
                     "allocation_order": index, "status": "AVAILABLE", "assigned_device": "",
-                    "auto_pool_enabled": False, "allow_any_model": False,
+                    "assigned_serial": "",
+                    "auto_pool_enabled": is_h12mp, "allow_any_model": False,
                     "usage": "Not Assigned", "file_size": path.stat().st_size,
                     "created_at": now, "updated_at": now,
                 }
@@ -1312,6 +1519,7 @@ def config_pool_errors(rows: list[dict] | None = None) -> list[str]:
     errors = []
     seen = set()
     hostnames = set()
+    pool_models = {}
     for row in rows:
         filename = row.get("filename", "")
         if not filename:
@@ -1343,6 +1551,12 @@ def config_pool_errors(rows: list[dict] | None = None) -> list[str]:
                 errors.append(f"Config pool '{filename}': {issue}.")
         except OSError as exc:
             errors.append(f"Config pool file '{filename}' cannot be read: {exc}.")
+        pool_name = str(row.get("pool_name") or "").strip()
+        model = config_device_model(row)
+        if pool_name and model:
+            previous = pool_models.setdefault(pool_name.lower(), model)
+            if previous.lower() != model.lower():
+                errors.append(f"Config pool '{pool_name}' contains multiple models: {previous} and {model}.")
     return list(dict.fromkeys(errors))
 
 
@@ -1437,6 +1651,12 @@ def repair_state_consistency() -> list[str]:
 
 
 def config_match_reason(meta: dict, observed_model: str = "", compatibility_group: str = "", *, automatic: bool = True) -> str:
+    declared_model = config_device_model(meta)
+    observed_model = str(observed_model or "").strip()
+    if declared_model:
+        if not observed_model:
+            return "MODEL_UNKNOWN"
+        return "" if declared_model.lower() == observed_model.lower() else "MODEL_CONFIG_MISMATCH"
     supported = _metadata_models(meta.get("supported_models"))
     declared_group = str(meta.get("compatibility_group", "")).strip()
     observed_model = str(observed_model or "").strip()
@@ -1694,6 +1914,12 @@ def deploy_dhcpd(text: str, settings=None, devices=None, profiles=None, *, resta
 
 
 def parse_leases() -> dict:
+    """Return the newest lease block per IP, including persisted Option 60.
+
+    ISC dhcpd appends new blocks, so later blocks intentionally replace older
+    blocks for the same address. Assignment decisions use only vendor-string
+    from this file; syslog remains troubleshooting-only.
+    """
     out = {}
     if not LEASES_FILE.exists():
         return out
@@ -1706,11 +1932,21 @@ def parse_leases() -> dict:
         state = re.search(r"binding state\s+(\w+);", body)
         uid = re.search(r"\buid\s+([^;]+);", body, re.I)
         hostname = re.search(r"client-hostname\s+\"([^\"]+)\";", body, re.I)
+        vendor = re.search(r"\bset\s+vendor-string\s*=\s*\"([^\"]*)\"\s*;", body, re.I)
+        raw_option60 = vendor.group(1).strip() if vendor else ""
+        identity, identity_error = parse_option60_identity(raw_option60)
         out[ip] = {
             "mac": mac.group(1).lower() if mac else "",
             "client_id": uid.group(1).strip().strip('"') if uid else "",
             "hostname": hostname.group(1) if hostname else "",
             "state": state.group(1) if state else "",
+            "option60": raw_option60,
+            "vendor_string": raw_option60,
+            "serial": (identity or {}).get("serial", ""),
+            "vendor_prefix": (identity or {}).get("vendor_prefix", ""),
+            "detected_model": (identity or {}).get("device_model", ""),
+            "profile_label": ((identity or {}).get("profile") or {}).get("label", ""),
+            "identity_error": identity_error,
         }
     return out
 
@@ -1720,7 +1956,7 @@ def _lease_is_active(lease: dict | None) -> bool:
 
 
 def option60_for_client(client_ip: str) -> str:
-    """Best-effort raw vendor-class extraction; never used as a unique identity."""
+    """Troubleshooting-only syslog extraction; never used for assignment."""
     if not SYSLOG_FILE.exists():
         return ""
     try:
@@ -1738,34 +1974,40 @@ def option60_for_client(client_ip: str) -> str:
 
 
 def _row_matches_lease(row: dict, client_ip: str, lease: dict) -> bool:
-    mac = str(lease.get("mac", "")).lower()
-    client_id = str(lease.get("client_id", "")).lower()
-    return bool((mac and row.get("mac_address", "").lower() == mac) or
-                (client_id and row.get("client_id", "").lower() == client_id) or
-                (row.get("ip_address") and row.get("ip_address") == client_ip))
+    """Device Overrides match exact serial only; MAC/IP are observations."""
+    serial = str(lease.get("serial") or "").strip().lower()
+    return bool(serial and str(row.get("serial_number") or "").strip().lower() == serial)
 
 
 def find_request_context(client_ip: str) -> tuple[dict | None, dict | None, dict | None, str]:
-    """Resolve a request only through an active lease and an unambiguous mapping/profile."""
+    """Resolve an active lease through exact serial and exact vendor prefix."""
     leases = parse_leases()
     lease = leases.get(client_ip)
     if not _lease_is_active(lease):
         return None, None, lease, "LEASE_NOT_FOUND"
+    raw_option60 = str(lease.get("option60") or "").strip()
+    identity, identity_error = parse_option60_identity(raw_option60)
+    if identity_error:
+        return None, None, lease, identity_error
+    lease.update({"serial": identity["serial"], "vendor_prefix": identity["vendor_prefix"],
+                  "detected_model": identity.get("device_model", "")})
     devices = read_devices()
     matched = [row for row in devices if _row_matches_lease(row, client_ip, lease)]
-    vendor = option60_for_client(client_ip)
-    if not matched and vendor:
-        serial_matches = [row for row in devices if row.get("serial_number") and
-                          vendor.lower().endswith(str(row.get("serial_number")).lower())]
-        matched = serial_matches
     if len(matched) > 1:
-        return None, None, lease, "AMBIGUOUS_MAPPING"
+        return None, None, lease, "AMBIGUOUS_SERIAL_MAPPING"
     row = matched[0] if matched else None
     profiles = read_profiles()
-    matched_profiles = profiles_matching_vendor(vendor, profiles)
+    matched_profiles = [profile for profile in profiles
+                        if profile_vendor_prefix(profile).lower() == identity["vendor_prefix"].lower()]
     if len(matched_profiles) > 1:
         return row, None, lease, "AMBIGUOUS_PROFILE"
-    return row, (matched_profiles[0] if matched_profiles else None), lease, "OK"
+    profile = matched_profiles[0] if matched_profiles else None
+    if not row and not profile:
+        return None, None, lease, "PROFILE_NOT_MATCHED"
+    if profile:
+        lease["detected_model"] = str(profile.get("device_model") or "").strip()
+        lease["profile_label"] = profile.get("label", "")
+    return row, profile, lease, "OK"
 
 
 def _assignment_filename_valid(filename: str, pool: list[dict]) -> tuple[bool, str]:
@@ -2023,6 +2265,62 @@ def reset_project_client(key: str, *, allow_delivered: bool = False,
     return True, message
 
 
+def ui_result(state: str) -> str:
+    """Map all internal/legacy states to the three operator-facing results."""
+    value = str(state or "").upper()
+    if value in {"DELIVERED", "VERIFIED", "COMPLETED", "DOWNLOADED"}:
+        return "Completed"
+    if value in {"DHCP_SEEN", "LEASED", "MATCHED", "ASSIGNED", "FETCHING",
+                 "ASSIGNED_NO_FETCH", "PARTIAL_FETCH", "RESERVED", "SEEN"}:
+        return "In Progress"
+    return "Error"
+
+
+def release_serial_assignment(serial_or_key: str, *, operator: str = "operator") -> tuple[bool, str]:
+    """Release one serial assignment while retaining mappings and audit history."""
+    serial = str(serial_or_key or "").strip()
+    if serial.lower().startswith("serial:"):
+        serial = serial.split(":", 1)[1]
+    if not SERIAL_RE.fullmatch(serial):
+        return False, "A valid Serial Number is required."
+    key = device_key(serial=serial)
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        assignment = state["devices"].get(key)
+        if not assignment:
+            return False, f"No assignment found for {serial}."
+        filename = str(assignment.get("config") or assignment.get("filename") or "")
+        client_ip = str(assignment.get("current_dhcp_ip") or assignment.get("dhcp_ip") or "")
+        observed_mac = normalize_mac(assignment.get("observed_mac") or assignment.get("mac") or "")
+        meta = state["configs"].get(filename)
+        if meta and (str(meta.get("assigned_device") or "") in {"", key} and
+                     str(meta.get("assigned_serial") or "").lower() in {"", serial.lower()}):
+            meta.update({"status": "AVAILABLE", "assigned_device": "", "assigned_serial": "",
+                         "usage": "Not Assigned", "updated_at": _now_iso()})
+        state["devices"].pop(key, None)
+        commit_provisioning_state(state)
+
+        runtime = read_device_runtime()
+        runtime = {runtime_key: item for runtime_key, item in runtime.items()
+                   if runtime_key != key
+                   and str(item.get("serial") or "").lower() != serial.lower()
+                   and not (observed_mac and normalize_mac(item.get("mac") or "") == observed_mac)}
+        write_device_runtime(runtime)
+        downloads = read_download_records()
+        downloads = {record_key: item for record_key, item in downloads.items()
+                     if str(item.get("serial") or "").lower() != serial.lower()
+                     and not (client_ip and item.get("client") == client_ip
+                              and (not filename or item.get("filename") == filename))}
+        write_download_records(downloads)
+        results = read_results()
+        results.pop(key, None)
+        write_results(results)
+    append_history("RELEASE_ASSIGNMENT", key, operator=operator, serial=serial,
+                   filename=filename, old_value=assignment.get("state", ""),
+                   new_value="AVAILABLE")
+    return True, f"Assignment for {serial} released; {filename or 'config'} is Available."
+
+
 def verify_project_client(key: str, *, remarks: str = "", operator: str = "operator") -> tuple[bool, str]:
     with _exclusive_lock(ALLOCATION_LOCK):
         state = read_provisioning_state()
@@ -2060,27 +2358,29 @@ def release_review_config(filename: str, *, operator: str = "operator") -> tuple
     return True, f"{filename} returned to AVAILABLE after review."
 
 
-def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None = None,
-                               profile: dict | None = None) -> tuple[dict | None, str]:
-    """MAC-first transaction with optional Vendor Profile pool filtering."""
-    mac = normalize_mac(lease.get("mac", ""))
-    if not mac:
-        return None, "MAC_REQUIRED"
-    key = f"mac:{mac}"
-    if row is None:
-        devices = read_devices()
-        matches = [item for item in devices if _row_matches_lease(item, client_ip, lease)]
-        if len(matches) > 1:
-            return None, "AMBIGUOUS_MAPPING"
-        row = matches[0] if matches else None
-    if profile is None:
-        vendor = str(lease.get("option60", "") or option60_for_client(client_ip)).strip()
-        matched_profiles = profiles_matching_vendor(vendor)
-        if len(matched_profiles) > 1:
-            return None, "AMBIGUOUS_PROFILE"
-        profile = matched_profiles[0] if matched_profiles else None
-    allocation_source = profile or row or {}
-    wanted_pool = str(allocation_source.get("pool_name") or "").strip()
+def _legacy_reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None = None,
+                                       profile: dict | None = None) -> tuple[dict | None, str]:
+    """Reserve a config using serial-first, deterministic, fail-closed rules."""
+    identity, identity_error = parse_option60_identity(lease.get("option60", ""))
+    if identity_error:
+        return None, identity_error
+    serial = identity["serial"]
+    key = device_key(serial=serial)
+    observed_mac = normalize_mac(lease.get("mac", ""))
+    override_rows = [item for item in read_devices()
+                     if str(item.get("serial_number") or "").strip().lower() == serial.lower()]
+    if row is not None:
+        override_rows = [row]
+    if len(override_rows) > 1:
+        return None, "AMBIGUOUS_SERIAL_MAPPING"
+    row = override_rows[0] if override_rows else None
+    matched_profiles = [item for item in read_profiles()
+                        if profile_vendor_prefix(item).lower() == identity["vendor_prefix"].lower()]
+    if profile is not None:
+        matched_profiles = [profile]
+    if len(matched_profiles) > 1:
+        return None, "AMBIGUOUS_PROFILE"
+    profile = matched_profiles[0] if matched_profiles else None
     sync_config_pool()
     history = []
     with _exclusive_lock(ALLOCATION_LOCK):
@@ -2099,11 +2399,18 @@ def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None 
             if device and (device.get("config") or device.get("filename")):
                 old_ip = device.get("current_dhcp_ip") or device.get("dhcp_ip", "")
                 filename = device.get("config") or device.get("filename", "")
-                device.update({"mac": mac, "client_id": lease.get("client_id", "") or device.get("client_id", ""),
+                meta = configs.get(filename, {})
+                owner_serial = str(meta.get("assigned_serial") or "").strip().lower()
+                owner_key = str(meta.get("assigned_device") or "")
+                if (owner_serial and owner_serial != serial.lower()) or (owner_key and owner_key != key):
+                    result, reason = None, "CONFIG_OWNERSHIP_CONFLICT"
+                    history.append((reason, key, {"ip": client_ip, "filename": filename}))
+                    return None, reason
+                device.update({"observed_mac": observed_mac, "mac": observed_mac,
+                               "client_id": lease.get("client_id", "") or device.get("client_id", ""),
                                "option12": lease.get("hostname", "") or device.get("option12", ""),
-                               "option60": lease.get("option60", "") or device.get("option60", ""),
-                               "serial": lease.get("serial", "") or device.get("serial", ""),
-                               "detected_model": lease.get("detected_model", "") or device.get("detected_model", ""),
+                               "option60": identity["raw_option60"], "raw_option60": identity["raw_option60"],
+                               "serial": serial, "vendor_prefix": identity["vendor_prefix"],
                                "current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
                                "last_seen": now, "updated_at": now,
                                "request_count": int(device.get("request_count", 0) or 0) + 1,
@@ -2122,16 +2429,81 @@ def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None 
                 result, reason = None, f"PROJECT_{project_status(state)}"
                 history.append((reason, key, {"ip": client_ip}))
             else:
-                candidates = [(filename, meta) for filename, meta in configs.items()
-                              if meta.get("status") == "AVAILABLE"
-                              and (not wanted_pool or str(meta.get("pool_name") or "").strip() == wanted_pool)]
-                candidates.sort(key=lambda item: (int(item[1].get("allocation_order", 0) or 0), item[0]))
-                if not candidates:
-                    result, reason = None, "CONFIG_POOL_EMPTY"
-                    reason = "PROFILE_POOL_EMPTY" if wanted_pool else reason
-                    history.append((reason, key, {"ip": client_ip, "pool_name": wanted_pool}))
+                source = ""
+                exact_filename = ""
+                wanted_pool = ""
+                detected_model = str((profile or {}).get("device_model") or "").strip()
+                if row:
+                    expected_model = str(row.get("expected_model") or row.get("device_type") or "").strip()
+                    if detected_model and expected_model and detected_model.lower() != expected_model.lower():
+                        result, reason = None, "MODEL_CONFIG_MISMATCH"
+                        history.append((reason, key, {"ip": client_ip, "expected_model": expected_model,
+                                                       "detected_model": detected_model}))
+                        return None, reason
+                    detected_model = expected_model or detected_model
+                    if assignment_type(row) == "STATIC":
+                        exact_filename = str(row.get("specific_config_file") or "").strip()
+                        source = "Override"
+                    else:
+                        wanted_pool = str(row.get("pool_name") or "").strip()
+                        source = "Override"
+                elif profile:
+                    detected_model = str(profile.get("device_model") or "").strip()
+                    wanted_pool = str(profile.get("pool_name") or "").strip()
+                    source = "Profile"
                 else:
-                    filename, meta = candidates[0]
+                    result, reason = None, "PROFILE_NOT_MATCHED"
+                    history.append((reason, key, {"ip": client_ip,
+                                                   "option60": identity["raw_option60"]}))
+                    return None, reason
+
+                candidates = []
+                if exact_filename:
+                    meta = configs.get(exact_filename)
+                    if not meta:
+                        result, reason = None, "CONFIG_INVALID"
+                        history.append((reason, key, {"ip": client_ip, "filename": exact_filename}))
+                        return None, reason
+                    owner_serial = str(meta.get("assigned_serial") or "").strip().lower()
+                    owner_key = str(meta.get("assigned_device") or "")
+                    if ((owner_serial and owner_serial != serial.lower()) or
+                            (owner_key and owner_key != key) or
+                            (meta.get("status") != "AVAILABLE" and owner_key != key)):
+                        result, reason = None, "CONFIG_OWNERSHIP_CONFLICT"
+                        history.append((reason, key, {"ip": client_ip, "filename": exact_filename}))
+                        return None, reason
+                    if config_match_reason(meta, detected_model, automatic=True):
+                        result, reason = None, "MODEL_CONFIG_MISMATCH"
+                        history.append((reason, key, {"ip": client_ip, "filename": exact_filename}))
+                        return None, reason
+                    candidates = [(exact_filename, meta)]
+                else:
+                    if not wanted_pool:
+                        result, reason = None, "PROFILE_POOL_EMPTY"
+                        history.append((reason, key, {"ip": client_ip, "pool_name": wanted_pool}))
+                        return None, reason
+                    pool_rows = [(filename, meta) for filename, meta in configs.items()
+                                 if str(meta.get("pool_name") or "").strip().lower() == wanted_pool.lower()]
+                    candidates = [(filename, meta) for filename, meta in pool_rows
+                                  if meta.get("status") == "AVAILABLE"
+                                  and config_match_reason(meta, detected_model, automatic=True) == ""]
+                    candidates.sort(key=lambda item: (int(item[1].get("allocation_order", 0) or 0), item[0]))
+                    if not candidates:
+                        reason = "MODEL_CONFIG_MISMATCH" if any(
+                            config_match_reason(meta, detected_model, automatic=True) == "MODEL_CONFIG_MISMATCH"
+                            for _, meta in pool_rows) else "PROFILE_POOL_EMPTY"
+                        result = None
+                        history.append((reason, key, {"ip": client_ip, "pool_name": wanted_pool,
+                                                       "detected_model": detected_model}))
+                        return None, reason
+
+                filename, meta = candidates[0]
+                owner_serial = str(meta.get("assigned_serial") or "").strip().lower()
+                owner_key = str(meta.get("assigned_device") or "")
+                if (owner_serial and owner_serial != serial.lower()) or (owner_key and owner_key != key):
+                    result, reason = None, "CONFIG_OWNERSHIP_CONFLICT"
+                    history.append((reason, key, {"ip": client_ip, "filename": filename}))
+                else:
                     path = NGINX_DIR / filename
                     checksum = str(meta.get("checksum") or "")
                     if not path.is_file() or not checksum:
@@ -2141,12 +2513,12 @@ def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None 
                         sequence = int(state["project"].get("next_sequence", 1) or 1)
                         device = dict(device or {})
                         device.update({
-                            "device_key": key, "sequence": sequence, "mac": mac,
+                            "device_key": key, "sequence": sequence,
+                            "serial": serial, "observed_mac": observed_mac, "mac": observed_mac,
                             "client_id": lease.get("client_id", ""),
-                            "serial": lease.get("serial", "") or device.get("serial", ""),
                             "option12": lease.get("hostname", ""),
-                            "option60": lease.get("option60", "") or device.get("option60", ""),
-                            "detected_model": lease.get("detected_model", "") or device.get("detected_model", ""),
+                            "option60": identity["raw_option60"], "raw_option60": identity["raw_option60"],
+                            "vendor_prefix": identity["vendor_prefix"], "detected_model": detected_model,
                             "first_dhcp_ip": device.get("first_dhcp_ip") or client_ip,
                             "current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
                             "config": filename, "filename": filename, "assigned_filename": filename,
@@ -2156,16 +2528,18 @@ def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None 
                             "first_seen": device.get("first_seen") or now, "last_seen": now,
                             "assigned_at": now, "updated_at": now, "first_fetch_at": "",
                             "delivered_at": "", "verified_at": "", "archived": False,
-                            "assignment_type": "AUTO", "request_count": 1, "request_count_total": 1,
+                            "assignment_type": "STATIC" if exact_filename else "AUTO",
+                            "assignment_source": source, "request_count": 1, "request_count_total": 1,
                             "fetch_count": 0, "fetch_times": [], "retry_count": 0,
                             "last_http_status": "", "expected_bytes": path.stat().st_size,
                             "actual_bytes": 0, "last_error": "", "remarks": device.get("remarks", ""),
                             "profile_label": (profile or {}).get("label", ""),
-                            "profile_vendor_class": (profile or {}).get("vendor_class", ""),
+                            "profile_vendor_class": profile_vendor_prefix(profile or {}),
                             "pool_name": wanted_pool,
                         })
                         devices[key] = device
-                        meta.update({"status": "ASSIGNED", "assigned_device": key, "updated_at": now})
+                        meta.update({"status": "ASSIGNED", "assigned_device": key,
+                                     "assigned_serial": serial, "updated_at": now})
                         state["project"]["next_sequence"] = sequence + 1
                         state["project"]["updated_at"] = now
                         commit_provisioning_state(state)
@@ -2322,6 +2696,205 @@ def _record_dynamic_fetch(key: str, filename: str, body: bytes, status_code: int
                    http_status=status_code, bytes_sent=len(body), message=error)
 
 
+def _select_serial_candidate(configs: dict, serial: str, key: str, row: dict | None,
+                             profile: dict | None) -> tuple[dict | None, str]:
+    """Select exactly one config without any cross-pool/global fallback."""
+    source = "Override" if row else "Profile"
+    profile_model = str((profile or {}).get("device_model") or
+                        (profile or {}).get("compatibility_group") or "").strip()
+    model = profile_model
+    exact_filename = ""
+    pool_name = ""
+    if row:
+        expected = str(row.get("expected_model") or row.get("device_type") or "").strip()
+        if expected and profile_model and expected.lower() != profile_model.lower():
+            return None, "MODEL_CONFIG_MISMATCH"
+        model = expected or profile_model
+        if assignment_type(row) == "STATIC":
+            exact_filename = str(row.get("specific_config_file") or "").strip()
+        else:
+            pool_name = str(row.get("pool_name") or "").strip()
+    elif profile:
+        pool_name = str(profile.get("pool_name") or "").strip()
+    else:
+        return None, "PROFILE_NOT_MATCHED"
+
+    candidates = []
+    if exact_filename:
+        meta = configs.get(exact_filename)
+        if not meta:
+            return None, "CONFIG_INVALID"
+        candidates = [(exact_filename, meta)]
+    else:
+        if not pool_name:
+            return None, "PROFILE_POOL_EMPTY"
+        pool_rows = [(filename, meta) for filename, meta in configs.items()
+                     if str(meta.get("pool_name") or "").strip().lower() == pool_name.lower()]
+        candidates = [(filename, meta) for filename, meta in pool_rows
+                      if meta.get("status") == "AVAILABLE"
+                      and config_match_reason(meta, model, automatic=True) == ""]
+        candidates.sort(key=lambda item: (int(item[1].get("allocation_order", 0) or 0), item[0]))
+        if not candidates:
+            if any(config_match_reason(meta, model, automatic=True) in
+                   {"MODEL_CONFIG_MISMATCH", "MODEL_MISMATCH"} for _, meta in pool_rows):
+                return None, "MODEL_CONFIG_MISMATCH"
+            return None, "PROFILE_POOL_EMPTY"
+
+    filename, meta = candidates[0]
+    owner_serial = str(meta.get("assigned_serial") or "").strip().lower()
+    owner_key = str(meta.get("assigned_device") or "")
+    if ((owner_serial and owner_serial != serial.lower()) or
+            (owner_key and owner_key != key) or
+            (meta.get("status") != "AVAILABLE" and owner_key != key)):
+        return None, "CONFIG_OWNERSHIP_CONFLICT"
+    if config_match_reason(meta, model, automatic=True):
+        return None, "MODEL_CONFIG_MISMATCH"
+    return {"filename": filename, "meta": meta, "model": model,
+            "pool_name": pool_name, "source": source,
+            "assignment_type": "STATIC" if exact_filename else "AUTO"}, ""
+
+
+def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None = None,
+                               profile: dict | None = None) -> tuple[dict | None, str]:
+    """Serial-first allocation transaction with deterministic priority.
+
+    Priority: existing serial assignment -> Device Override -> Vendor Profile.
+    """
+    identity, reason = parse_option60_identity(lease.get("option60", ""))
+    if reason:
+        append_history(reason, ip=client_ip, option60=lease.get("option60", ""))
+        return None, reason
+    serial = identity["serial"]
+    key = device_key(serial=serial)
+    observed_mac = normalize_mac(lease.get("mac", ""))
+
+    overrides = [item for item in read_devices()
+                 if str(item.get("serial_number") or "").strip().lower() == serial.lower()]
+    if row is not None:
+        overrides = [row]
+    if len(overrides) > 1:
+        append_history("AMBIGUOUS_SERIAL_MAPPING", key, ip=client_ip, serial=serial)
+        return None, "AMBIGUOUS_SERIAL_MAPPING"
+    row = overrides[0] if overrides else None
+
+    matched_profiles = [item for item in read_profiles()
+                        if profile_vendor_prefix(item).lower() == identity["vendor_prefix"].lower()]
+    if profile is not None:
+        matched_profiles = [profile]
+    if len(matched_profiles) > 1:
+        append_history("AMBIGUOUS_PROFILE", key, ip=client_ip, serial=serial,
+                       option60=identity["raw_option60"])
+        return None, "AMBIGUOUS_PROFILE"
+    profile = matched_profiles[0] if matched_profiles else None
+
+    sync_config_pool()
+    events = []
+    with _exclusive_lock(ALLOCATION_LOCK):
+        state = read_provisioning_state()
+        devices = state["devices"]
+        configs = state["configs"]
+        now = _now_iso()
+        conflict = next((other_key for other_key, other in devices.items()
+                         if other_key != key and other.get("current_dhcp_ip") == client_ip
+                         and not other.get("archived")), "")
+        if conflict:
+            result, reason = None, "IP_CONFLICT"
+            events.append((reason, {"ip": client_ip, "conflicting_device": conflict}))
+        else:
+            existing = devices.get(key)
+            if existing and (existing.get("config") or existing.get("filename")):
+                filename = existing.get("config") or existing.get("filename", "")
+                meta = configs.get(filename, {})
+                owner_serial = str(meta.get("assigned_serial") or serial).strip().lower()
+                owner_key = str(meta.get("assigned_device") or key)
+                if owner_serial != serial.lower() or owner_key != key:
+                    result, reason = None, "CONFIG_OWNERSHIP_CONFLICT"
+                    events.append((reason, {"ip": client_ip, "filename": filename}))
+                else:
+                    old_ip = existing.get("current_dhcp_ip") or existing.get("dhcp_ip", "")
+                    existing.update({
+                        "device_key": key, "serial": serial,
+                        "observed_mac": observed_mac, "mac": observed_mac,
+                        "client_id": lease.get("client_id", "") or existing.get("client_id", ""),
+                        "option12": lease.get("hostname", "") or existing.get("option12", ""),
+                        "option60": identity["raw_option60"], "raw_option60": identity["raw_option60"],
+                        "vendor_prefix": identity["vendor_prefix"],
+                        "current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
+                        "last_seen": now, "updated_at": now,
+                        "request_count": int(existing.get("request_count", 0) or 0) + 1,
+                        "request_count_total": int(existing.get("request_count_total", 0) or 0) + 1,
+                    })
+                    if meta:
+                        meta.update({"assigned_device": key, "assigned_serial": serial})
+                    commit_provisioning_state(state)
+                    result, reason = dict(existing), ""
+                    if old_ip and old_ip != client_ip:
+                        events.append(("IP_CHANGED", {"old_value": old_ip, "new_value": client_ip,
+                                                       "filename": filename}))
+                    events.append(("DHCP_SEEN", {"ip": client_ip, "filename": filename}))
+            elif project_status(state) != "ACTIVE":
+                result, reason = None, f"PROJECT_{project_status(state)}"
+                events.append((reason, {"ip": client_ip}))
+            else:
+                selection, reason = _select_serial_candidate(configs, serial, key, row, profile)
+                if reason:
+                    result = None
+                    events.append((reason, {"ip": client_ip, "serial": serial,
+                                            "option60": identity["raw_option60"]}))
+                else:
+                    filename = selection["filename"]
+                    meta = selection["meta"]
+                    path = NGINX_DIR / filename
+                    checksum = str(meta.get("checksum") or "")
+                    if not path.is_file() or not checksum:
+                        result, reason = None, "CONFIG_INVALID"
+                        events.append((reason, {"ip": client_ip, "filename": filename}))
+                    else:
+                        sequence = int(state["project"].get("next_sequence", 1) or 1)
+                        result = {
+                            "device_key": key, "sequence": sequence, "serial": serial,
+                            "observed_mac": observed_mac, "mac": observed_mac,
+                            "client_id": lease.get("client_id", ""), "option12": lease.get("hostname", ""),
+                            "option60": identity["raw_option60"], "raw_option60": identity["raw_option60"],
+                            "vendor_prefix": identity["vendor_prefix"],
+                            "detected_model": selection["model"],
+                            "first_dhcp_ip": client_ip, "current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
+                            "config": filename, "filename": filename, "assigned_filename": filename,
+                            "assigned_checksum": checksum, "config_sha256": checksum,
+                            "assigned_file_size": path.stat().st_size,
+                            "state": "ASSIGNED", "status": "ASSIGNED", "delivery_state": "ASSIGNED",
+                            "first_seen": now, "last_seen": now, "assigned_at": now,
+                            "updated_at": now, "first_fetch_at": "", "delivered_at": "",
+                            "verified_at": "", "archived": False,
+                            "assignment_type": selection["assignment_type"],
+                            "assignment_source": selection["source"],
+                            "request_count": 1, "request_count_total": 1,
+                            "fetch_count": 0, "fetch_times": [], "retry_count": 0,
+                            "last_http_status": "", "expected_bytes": path.stat().st_size,
+                            "actual_bytes": 0, "last_error": "",
+                            "profile_label": (profile or {}).get("label", ""),
+                            "profile_vendor_class": profile_vendor_prefix(profile or {}),
+                            "pool_name": selection["pool_name"],
+                        }
+                        devices[key] = result
+                        meta.update({"status": "ASSIGNED", "assigned_device": key,
+                                     "assigned_serial": serial, "updated_at": now})
+                        state["project"]["next_sequence"] = sequence + 1
+                        state["project"]["updated_at"] = now
+                        commit_provisioning_state(state)
+                        reason = ""
+                        events.extend([
+                            ("DHCP_SEEN", {"ip": client_ip}),
+                            ("ASSIGNED", {"ip": client_ip, "filename": filename,
+                                           "sequence": sequence, "source": selection["source"]}),
+                        ])
+    for event, fields in events:
+        payload = dict(fields)
+        payload.setdefault("serial", serial)
+        append_history(event, key, **payload)
+    return result, reason
+
+
 def dynamic_config_result(client_ip: str) -> tuple[bytes | None, str, int]:
     settings = read_settings()
     if operating_mode(settings) != "ZTP_PROVISIONING":
@@ -2331,13 +2904,13 @@ def dynamic_config_result(client_ip: str) -> tuple[bytes | None, str, int]:
         append_history("LEASE_NOT_FOUND", ip=client_ip,
                        message="Resolver requires an active dhcpd.leases entry.")
         return None, "LEASE_NOT_FOUND", 404
-    key = device_key(mac=lease.get("mac", ""))
-    if not key:
-        append_history("MAC_REQUIRED", ip=client_ip)
-        return None, "MAC_REQUIRED", 409
     assignment, reserve_error = reserve_project_assignment(client_ip, lease)
     if reserve_error:
         return None, reserve_error, 409
+    key = assignment.get("device_key", "")
+    if not key.startswith("serial:"):
+        append_history("SERIAL_NOT_PARSED", ip=client_ip)
+        return None, "SERIAL_NOT_PARSED", 409
     filename = assignment.get("config") or assignment.get("filename", "")
     pool = read_config_pool()
     valid, file_error = _assignment_filename_valid(filename, pool)
@@ -2380,6 +2953,8 @@ def _dhcp_retry_counts() -> dict[str, int]:
     cutoff = datetime.now(timezone.utc).timestamp() - _safe_int(
         settings, "dhcp_retry_window_minutes", 5) * 60
     counts = {}
+    lease_keys = {normalize_mac(lease.get("mac", "")): device_key(serial=lease.get("serial", ""))
+                  for lease in parse_leases().values() if lease.get("serial")}
     for line in lines:
         if not re.search(r"DHCP(?:DISCOVER|REQUEST)", line, re.I):
             continue
@@ -2395,8 +2970,9 @@ def _dhcp_retry_counts() -> dict[str, int]:
                 pass
         match = re.search(r"from\s+([0-9a-f:]{17})", line, re.I)
         if match:
-            key = f"mac:{match.group(1).lower()}"
-            counts[key] = counts.get(key, 0) + 1
+            key = lease_keys.get(normalize_mac(match.group(1)))
+            if key:
+                counts[key] = counts.get(key, 0) + 1
     return counts
 
 
@@ -2491,14 +3067,148 @@ def provisioning_rows() -> list[dict]:
     return rows
 
 
+ERROR_MESSAGES = {
+    "OPTION60_NOT_CAPTURED": "DHCP Option 60 was not captured",
+    "SERIAL_NOT_PARSED": "Serial Number could not be parsed",
+    "AMBIGUOUS_SERIAL_MAPPING": "Multiple Device Overrides match this serial",
+    "PROFILE_NOT_MATCHED": "Vendor Profile not matched",
+    "AMBIGUOUS_PROFILE": "Multiple Vendor Profiles matched",
+    "PROFILE_POOL_EMPTY": "No available config in the selected pool",
+    "MODEL_CONFIG_MISMATCH": "Config is not compatible with the detected model",
+    "CONFIG_OWNERSHIP_CONFLICT": "Config is assigned to another serial",
+    "FETCH_FAILED": "Config download failed",
+    "REPEATED_FETCH": "Device repeatedly requested the same config",
+    "CONFIG_INVALID": "Config file is missing or invalid",
+    "LEASE_NOT_FOUND": "Active DHCP lease not found",
+}
+
+
+def friendly_event_message(code: str, fallback: str = "") -> str:
+    code = str(code or "").upper()
+    if code in ERROR_MESSAGES:
+        return ERROR_MESSAGES[code]
+    if code in {"DELIVERED", "VERIFIED", "COMPLETED"}:
+        return "Config delivered"
+    if code in {"FETCH", "FETCHING"}:
+        return "Config download started"
+    if code in {"ASSIGNED", "RESERVE_AUTO"}:
+        return "Config assigned"
+    if code in {"DHCP_SEEN", "DHCPDISCOVER", "DHCPREQUEST", "DHCPACK"}:
+        return "Device observed by DHCP"
+    if code == "RELEASE_ASSIGNMENT":
+        return "Assignment released"
+    return fallback or code.replace("_", " ").title()
+
+
+def deployment_rows(*, apply_filters: bool = True) -> list[dict]:
+    """Return the serial-first Deployment Status rows used by UI and reports."""
+    reconcile_downloads()
+    state = read_provisioning_state()
+    rows = {}
+    for key, item in state["devices"].items():
+        serial = str(item.get("serial") or (key.split(":", 1)[1] if key.startswith("serial:") else ""))
+        filename = str(item.get("config") or item.get("filename") or "")
+        meta = state["configs"].get(filename, {})
+        internal_state = str(item.get("state") or item.get("status") or "")
+        row_key = key if serial else f"legacy:{key}"
+        rows[row_key] = {
+            "device_key": key, "serial": serial, "model": item.get("detected_model") or
+                config_device_model(meta), "config": filename, "result": ui_result(internal_state),
+            "last_update": item.get("updated_at") or item.get("last_seen") or "",
+            "observed_mac": item.get("observed_mac") or item.get("mac") or "",
+            "dhcp_ip": item.get("current_dhcp_ip") or item.get("dhcp_ip") or "",
+            "option60": item.get("raw_option60") or item.get("option60") or "",
+            "profile": item.get("profile_label") or "", "pool": item.get("pool_name") or meta.get("pool_name", ""),
+            "assignment_source": item.get("assignment_source") or
+                ("Existing" if filename else ""),
+            "http_status": item.get("last_http_status") or "",
+            "expected_bytes": item.get("expected_bytes") or item.get("assigned_file_size") or 0,
+            "actual_bytes": item.get("actual_bytes") or item.get("last_bytes_sent") or 0,
+            "retry_count": item.get("retry_count") or item.get("fetch_count") or 0,
+            "last_error": friendly_event_message(item.get("last_error") or internal_state,
+                                                 item.get("last_error") or ""),
+            "internal_state": internal_state,
+        }
+    for ip, lease in (parse_leases().items() if is_dhcp_mode() else []):
+        if not _lease_is_active(lease):
+            continue
+        serial = str(lease.get("serial") or "")
+        key = device_key(serial=serial) if serial else f"lease:{ip}"
+        if key in rows:
+            rows[key].update({"observed_mac": lease.get("mac") or rows[key]["observed_mac"],
+                              "dhcp_ip": ip, "option60": lease.get("option60") or rows[key]["option60"]})
+            continue
+        error = lease.get("identity_error") or ("" if serial else "SERIAL_NOT_PARSED")
+        rows[key] = {"device_key": key if serial else "", "serial": serial,
+                     "model": lease.get("detected_model", ""), "config": "",
+                     "result": "Error" if error else "In Progress", "last_update": "",
+                     "observed_mac": lease.get("mac", ""), "dhcp_ip": ip,
+                     "option60": lease.get("option60", ""), "profile": lease.get("profile_label", ""),
+                     "pool": "", "assignment_source": "", "http_status": "",
+                     "expected_bytes": 0, "actual_bytes": 0, "retry_count": 0,
+                     "last_error": friendly_event_message(error), "internal_state": error or "DHCP_SEEN"}
+    visible = list(rows.values())
+    try:
+        result_filter = request.args.get("result", request.args.get("state", "")).strip().lower()
+        search = request.args.get("client_q", request.args.get("serial", "")).strip().lower()
+    except RuntimeError:
+        result_filter = search = ""
+    if not apply_filters:
+        result_filter = search = ""
+    if result_filter:
+        visible = [row for row in visible if result_filter in row["result"].lower()]
+    if search:
+        visible = [row for row in visible if any(search in str(row.get(field, "")).lower()
+                  for field in ("serial", "model", "config", "observed_mac", "dhcp_ip"))]
+    visible.sort(key=lambda row: row.get("last_update", ""), reverse=True)
+    return visible
+
+
+def deployment_metrics(rows: list[dict] | None = None) -> dict:
+    rows = deployment_rows() if rows is None else rows
+    expected = max(0, _safe_int(read_settings(), "project_expected_devices", 0))
+    observed = len({row["serial"].lower() for row in rows if row.get("serial")})
+    return {"expected": expected, "observed": observed,
+            "completed": sum(1 for row in rows if row["result"] == "Completed"),
+            "in_progress": sum(1 for row in rows if row["result"] == "In Progress"),
+            "error": sum(1 for row in rows if row["result"] == "Error"),
+            "remaining": max(0, expected - observed)}
+
+
+def simplified_log_rows(limit: int = 50) -> list[dict]:
+    rows = []
+    for item in read_history(100000):
+        code = str(item.get("event_type") or item.get("reason") or "")
+        key = str(item.get("device_key") or "")
+        serial = str(item.get("serial") or (key.split(":", 1)[1] if key.startswith("serial:") else ""))
+        result = ui_result(item.get("state") or code)
+        rows.append({"time": item.get("timestamp", ""), "serial": serial,
+                     "config": item.get("filename", ""), "result": result,
+                     "message": friendly_event_message(code, item.get("message", "")),
+                     "event_type": code})
+    try:
+        serial_filter = request.args.get("log_serial", "").strip().lower()
+        config_filter = request.args.get("log_config", "").strip().lower()
+        result_filter = request.args.get("log_result", "").strip().lower()
+    except RuntimeError:
+        serial_filter = config_filter = result_filter = ""
+    if serial_filter:
+        rows = [row for row in rows if serial_filter in row["serial"].lower()]
+    if config_filter:
+        rows = [row for row in rows if config_filter in row["config"].lower()]
+    if result_filter:
+        rows = [row for row in rows if result_filter == row["result"].lower()]
+    return rows[-max(1, min(limit, 1000)):]
+
+
 def _client_identity(*, client_id: str = "", mac: str = "", serial: str = "", ip: str = "", suffix: str = "") -> str:
     """Choose a durable client key; IP is only a last-resort lookup key."""
+    if serial:
+        return f"serial:{serial.strip().lower()}"
     if client_id:
         return f"client-id:{client_id.strip().lower()}"
     if mac:
         return f"mac:{mac.strip().lower()}"
-    if serial:
-        return f"serial:{serial.strip().lower()}"
     return f"ip:{ip.strip()}:{suffix}" if ip else f"unknown:{suffix}"
 
 
@@ -2681,6 +3391,107 @@ def _start_enable_dhcp() -> tuple[bool, str]:
     if not ok:
         return False, f"DHCP {action} failed: {detail}"
     return True, f"DHCP enabled and {action}ed."
+
+
+def _reset_backup(preset: str) -> tuple[Path, dict[Path, Path]]:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_dir = DATA_DIR / "reset-backups" / f"{stamp}-{preset.lower()}"
+    backup_dir.mkdir(parents=True, exist_ok=False)
+    mapping = {}
+    for source in (PROVISIONING_STATE_JSON, CONFIG_POOL_JSON, ASSIGNMENTS_JSON,
+                   DEVICE_RUNTIME_JSON, DOWNLOAD_RECORDS_JSON, RESULTS_JSON,
+                   PARSER_CURSORS_JSON, LEASES_FILE, DEVICES_JSON,
+                   STATIC_MAPPINGS_JSON, PROFILES_JSON):
+        if source.exists():
+            target = backup_dir / ("leases" if source == LEASES_FILE else "state") / source.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            mapping[source] = target
+    config_backup = backup_dir / "configs"
+    config_backup.mkdir(parents=True, exist_ok=True)
+    for filename in list_configs():
+        source = NGINX_DIR / filename
+        target = config_backup / filename
+        shutil.copy2(source, target)
+        mapping[source] = target
+    return backup_dir, mapping
+
+
+def _restore_reset_backup(mapping: dict[Path, Path]) -> None:
+    for target, backup in mapping.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".reset-rollback.tmp")
+        shutil.copy2(backup, tmp)
+        os.replace(tmp, target)
+
+
+def _parser_cursors_at_eof() -> dict:
+    cursors = {}
+    for key, source in (("dhcp", SYSLOG_FILE), ("nginx", NGINX_ACCESS)):
+        if source.exists():
+            stat = source.stat()
+            cursors[key] = {"inode": str(stat.st_ino), "offset": stat.st_size,
+                            "updated_at": _now_iso()}
+    return cursors
+
+
+def reset_workspace(preset: str, *, operator: str = "operator") -> tuple[bool, str]:
+    """Reset runtime state with backup, rollback and preserved settings/logs."""
+    preset = str(preset or "").upper()
+    if preset not in {"RETEST", "CLEAN"}:
+        return False, "Unknown reset preset."
+    dhcp_was_enabled = is_dhcp_mode()
+    if dhcp_was_enabled:
+        ok, detail = _systemctl_action("stop")
+        if not ok:
+            return False, f"Reset blocked because DHCP could not be stopped: {detail}"
+    backup_dir = None
+    mapping = {}
+    try:
+        backup_dir, mapping = _reset_backup(preset)
+        with _exclusive_lock(ALLOCATION_LOCK):
+            state = read_provisioning_state()
+            if preset == "RETEST":
+                for meta in state["configs"].values():
+                    if meta.get("status") != "MISSING":
+                        meta.update({"status": "AVAILABLE", "assigned_device": "",
+                                     "assigned_serial": "", "usage": "Not Assigned",
+                                     "updated_at": _now_iso()})
+            else:
+                state["configs"] = {}
+            state["devices"] = {}
+            state["project"].update({"status": "PAUSED", "next_sequence": 1,
+                                     "updated_at": _now_iso()})
+            commit_provisioning_state(state)
+            write_device_runtime({})
+            write_download_records({})
+            write_results({})
+            write_parser_cursors(_parser_cursors_at_eof())
+            if LEASES_FILE.exists():
+                _atomic_write_bytes(LEASES_FILE, b"")
+            if preset == "CLEAN":
+                write_devices([])
+                write_profiles([])
+                for filename in list_configs():
+                    (NGINX_DIR / filename).unlink(missing_ok=True)
+                    if UPLOAD_DIR != NGINX_DIR:
+                        (UPLOAD_DIR / filename).unlink(missing_ok=True)
+        if dhcp_was_enabled:
+            ok, detail = _start_enable_dhcp()
+            if not ok or (not DEV_MODE and service_state("isc-dhcp-server") != "active"):
+                raise RuntimeError(detail or "isc-dhcp-server did not return active")
+    except (OSError, JsonDataError, RuntimeError) as exc:
+        if mapping:
+            try:
+                _restore_reset_backup(mapping)
+            except OSError as rollback_exc:
+                return False, f"Reset failed and rollback also failed: {exc}; {rollback_exc}"
+        if dhcp_was_enabled:
+            _start_enable_dhcp()
+        return False, f"Reset failed; previous state restored: {exc}"
+    append_history("RESET_FOR_RETEST" if preset == "RETEST" else "RESET_CLEAN_WORKSPACE",
+                   operator=operator, backup=str(backup_dir))
+    return True, f"{preset.title()} reset completed. Backup: {backup_dir}"
 
 
 def _apply_operating_mode(target: str, *, settings: dict | None = None,
@@ -2866,7 +3677,8 @@ def provisioning_config_metadata():
     if not filename or not _allowed(filename) or not (NGINX_DIR / filename).is_file():
         flash("Config metadata was not saved: file is missing or filename is not allowed.", "danger")
         return redirect(url_for("index", view="configs"))
-    supported = _metadata_models(request.form.get("supported_models", ""))
+    device_model = request.form.get("device_model", "").strip()
+    supported = [device_model] if device_model else _metadata_models(request.form.get("supported_models", ""))
     group = request.form.get("compatibility_group", "").strip()
     hostname = request.form.get("hostname", "").strip()
     pool_name = request.form.get("pool_name", "").strip()
@@ -2881,6 +3693,13 @@ def provisioning_config_metadata():
         assignments = read_assignments()
         if hostname and any(item.get("hostname") == hostname and item.get("filename") != filename for item in pool):
             flash(f"Config hostname '{hostname}' is already used by another file.", "danger")
+            return redirect(url_for("index", view="configs"))
+        if pool_name and device_model and any(
+                str(item.get("pool_name") or "").strip().lower() == pool_name.lower()
+                and config_device_model(item)
+                and config_device_model(item).lower() != device_model.lower()
+                for item in pool if item.get("filename") != filename):
+            flash(f"Config Pool '{pool_name}' is already assigned to another model.", "danger")
             return redirect(url_for("index", view="configs"))
         row = config_file_meta(filename, pool)
         if not row:
@@ -2899,6 +3718,7 @@ def provisioning_config_metadata():
                 flash("Delivered config is protected and cannot be disabled or reused.", "danger")
                 return redirect(url_for("index", view="configs"))
         row.update({"hostname": hostname, "supported_models": supported,
+                    "device_model": device_model or config_device_model(row),
                     "compatibility_group": group, "pool_name": pool_name,
                     "auto_pool_enabled": auto_pool_enabled,
                     "allow_any_model": allow_any_model,
@@ -2906,7 +3726,8 @@ def provisioning_config_metadata():
                     "updated_at": _now_iso()})
         write_config_pool(pool)
     append_history("CONFIG_METADATA", operator=operator_name(), filename=filename,
-                   new_value=json.dumps({"hostname": hostname, "supported_models": supported,
+                   new_value=json.dumps({"hostname": hostname, "device_model": device_model,
+                                         "supported_models": supported,
                                          "compatibility_group": group, "pool_name": pool_name}))
     if disabling and active_assignment:
         append_history("FORCE_DISABLE_AUTO_POOL", operator=operator_name(), filename=filename,
@@ -2918,30 +3739,49 @@ def provisioning_config_metadata():
 @app.route("/provisioning/release/<path:provision_key>", methods=["POST"])
 def release_assignment(provision_key):
     if request.form.get("confirm_release") != "yes":
-        flash("Confirm release before changing the Auto assignment.", "warning")
+        flash("Confirm Release Assignment before continuing.", "warning")
         return redirect(url_for("index", view="overview"))
-    with _exclusive_lock(ALLOCATION_LOCK):
-        assignments = read_assignments()
-        pool = read_config_pool()
-        assignment = assignments.get(provision_key)
-        if not assignment:
-            flash("No Auto Assignment found for this device.", "warning")
-            return redirect(url_for("index", view="overview"))
-        if assignment.get("assignment_type") != "AUTO":
-            flash("Only AUTO assignments can be released; STATIC mappings require an explicit mapping change.", "warning")
-            return redirect(url_for("index", view="overview"))
-        if assignment.get("status") != "RESERVED" or assignment.get("state") not in {"ASSIGNED", "ASSIGNED_NO_FETCH"} or assignment.get("fetch_times"):
-            flash("Only an unused RESERVED Auto assignment can be released. FETCHING and DELIVERED are protected.", "warning")
-            return redirect(url_for("index", view="overview"))
-        filename = assignment.get("filename", "")
-        meta = config_file_meta(filename, pool)
-        if meta:
-            meta.update({"status": "AVAILABLE", "assigned_device": "", "updated_at": _now_iso()})
-        assignments.pop(provision_key, None)
-        write_allocation_state(pool, assignments)
-    append_history("RELEASE_AUTO", provision_key, operator=operator_name(), filename=filename)
-    flash("Auto Assignment released; config returned to AVAILABLE.", "success")
+    ok, message = release_serial_assignment(provision_key, operator=operator_name())
+    flash(message, "success" if ok else "warning")
     return redirect(url_for("index", view="overview"))
+
+
+@app.route("/provisioning/config/bulk", methods=["POST"])
+def bulk_config_metadata():
+    filenames = [os.path.basename(name) for name in request.form.getlist("filenames") if name]
+    model = request.form.get("device_model", "").strip()
+    pool_name = request.form.get("pool_name", "").strip()
+    if not filenames or not model or not pool_name:
+        flash("Select unused configs and provide both Model and Pool.", "warning")
+        return redirect(url_for("index", view="configs"))
+    try:
+        order = max(1, int(request.form.get("allocation_order", "1") or 1))
+    except ValueError:
+        order = 1
+    with _exclusive_lock(ALLOCATION_LOCK):
+        pool = read_config_pool()
+        selected = [item for item in pool if item.get("filename") in filenames]
+        if len(selected) != len(set(filenames)) or any(
+                item.get("status") != "AVAILABLE" or item.get("assigned_device") or item.get("assigned_serial")
+                for item in selected):
+            flash("Bulk update is allowed only for existing, unused Available configs.", "danger")
+            return redirect(url_for("index", view="configs"))
+        if any(str(item.get("pool_name") or "").lower() == pool_name.lower()
+               and config_device_model(item)
+               and config_device_model(item).lower() != model.lower()
+               for item in pool if item.get("filename") not in filenames):
+            flash(f"Pool '{pool_name}' is already assigned to another model.", "danger")
+            return redirect(url_for("index", view="configs"))
+        for offset, item in enumerate(sorted(selected, key=lambda value: value.get("filename", ""))):
+            item.update({"device_model": model, "supported_models": [model], "pool_name": pool_name,
+                         "allocation_order": order + offset, "auto_pool_enabled": True,
+                         "updated_at": _now_iso()})
+        write_config_pool(pool)
+    append_history("BULK_CONFIG_METADATA", operator=operator_name(),
+                   new_value=json.dumps({"files": filenames, "device_model": model,
+                                         "pool_name": pool_name}, ensure_ascii=False))
+    flash(f"Updated {len(filenames)} unused configs.", "success")
+    return redirect(url_for("index", view="configs"))
 
 
 @app.route("/provisioning/force-release/<path:provision_key>", methods=["POST"])
@@ -3004,6 +3844,15 @@ def index(view=None):
     profiles = read_profiles()
     provisioning = provisioning_summary()
     client_rows = unified_client_rows()
+    deployment_status = deployment_rows() if operating_mode(settings) == "ZTP_PROVISIONING" else []
+    metrics = deployment_metrics(deployment_status) if deployment_status else {
+        "expected": _safe_int(settings, "project_expected_devices", 0), "observed": 0,
+        "completed": 0, "in_progress": 0, "error": 0,
+        "remaining": _safe_int(settings, "project_expected_devices", 0)}
+    try:
+        log_limit = int(request.args.get("log_limit", "50") or 50)
+    except ValueError:
+        log_limit = 50
     pool = sync_config_pool()
     recent_downloads = list(read_download_records().values())[-200:]
     download_errors = sum(1 for item in recent_downloads if item.get("download_state") in {"FETCH_FAILED", "DOWNLOAD_FAILED", "PARTIAL_FETCH", "PARTIAL_DOWNLOAD"})
@@ -3019,10 +3868,12 @@ def index(view=None):
         pool_suggestion=dhcp_pool_suggestion(settings),
         pool_prefix_length=netmask_prefix_length(settings.get("netmask", "")),
         provisioning=provisioning, client_rows=client_rows, mode=operating_mode(settings),
+        deployment_status=deployment_status, deployment_metrics=metrics,
         pending_mode=pending_mode(settings), service_status=service_status(),
         active_leases=len(parse_leases()) if is_dhcp_mode(settings) else 0,
         download_errors=download_errors, recent_downloads=recent_downloads,
         recent_history=read_history(200),
+        simple_logs=simplified_log_rows(log_limit), log_limit=log_limit,
         device_runtime=read_device_runtime(), option60_log=dhcp_option60_lines(),
         dhcp_log="\n".join(LOG_SOURCES["dhcp"]()) if is_dhcp_mode(settings) else "",
         nginx_log="\n".join(LOG_SOURCES["nginx"]()),
@@ -3068,6 +3919,18 @@ def service_restart():
         detail = (result.stderr or result.stdout or "unknown systemd error").strip()
         return jsonify(ok=False, message=f"Service restart failed: {detail}"), 503
     return jsonify(ok=True, message="ZTP service restart requested. The page will reconnect shortly.")
+
+
+@app.route("/workspace/reset", methods=["POST"])
+def workspace_reset():
+    preset = request.form.get("preset", "").strip().upper()
+    required = "RESET RETEST" if preset == "RETEST" else "RESET CLEAN"
+    if request.form.get("confirmation", "").strip().upper() != required:
+        flash(f"Type {required} to confirm this reset.", "warning")
+        return redirect(url_for("index", view="settings"))
+    ok, message = reset_workspace(preset, operator=operator_name())
+    flash(message, "success" if ok else "danger")
+    return redirect(url_for("index", view="settings"))
 
 
 @app.route("/settings", methods=["POST"])
@@ -3229,8 +4092,10 @@ def upload_config_bytes(name: str, data: bytes, *, operator: str = "system") -> 
         meta = config_file_meta(name, pool)
         if not meta:
             meta = {"filename": name, "hostname": "", "supported_models": [],
-                    "compatibility_group": "", "pool_name": "", "allocation_order": len(pool) + 1,
-                    "status": "AVAILABLE", "assigned_device": "", "auto_pool_enabled": False,
+                    "device_model": "", "compatibility_group": "", "pool_name": "",
+                    "allocation_order": len(pool) + 1,
+                    "status": "AVAILABLE", "assigned_device": "", "assigned_serial": "",
+                    "auto_pool_enabled": False,
                     "allow_any_model": False, "usage": "Not Assigned", "created_at": now}
             pool.append(meta)
         # Preserve operator metadata and runtime reservation fields.  A safe
@@ -3320,60 +4185,49 @@ def deploy():
     if operating_mode() != "ZTP_PROVISIONING":
         flash("Device mappings are disabled outside ZTP_PROVISIONING; use direct config downloads.", "warning")
         return redirect(url_for("index"))
-    method = request.form.get("match_method", "").strip()
-    if method not in MATCH_METHODS:
-        flash("Invalid match method.", "danger"); return redirect(url_for("index"))
+    method = "serial"
     serial = request.form.get("serial_number", "").strip()
-    mac    = request.form.get("mac_address", "").strip().lower()
-    host   = request.form.get("hostname", "").strip()
+    host = request.form.get("hostname", "").strip() or serial
+    requested_assignment = request.form.get("assignment_type", "STATIC").strip().upper()
     row = {"match_method": method,
-           "serial_number": serial if method == "serial" else "",
-           "mac_address": mac if method == "mac" else "",
-           "device_type": request.form.get("device_type", "").strip(),
+           "serial_number": serial,
+           "mac_address": "",
+           "device_type": request.form.get("expected_model", request.form.get("device_type", "")).strip(),
+           "expected_model": request.form.get("expected_model", request.form.get("device_type", "")).strip(),
            "hostname": host,
-           "ip_address": request.form.get("ip_address", "").strip(),
-           "mgmt_ip": request.form.get("mgmt_ip", "").strip(),
-           "client_id": request.form.get("client_id", "").strip(),
-           "compatibility_group": request.form.get("compatibility_group", "").strip(),
+           "ip_address": "", "mgmt_ip": "", "client_id": "", "compatibility_group": "",
            "specific_config_file": request.form.get("specific_config_file", "").strip(),
-           "assignment_type": request.form.get("assignment_type", "STATIC").strip().upper() or "STATIC",
+           "assignment_type": requested_assignment or "STATIC",
            "pool_name": request.form.get("pool_name", "").strip(),
-           "option60_confirmed": request.form.get("option60_confirmed", "").strip()}
-    if method == "serial" and not serial:
-        flash("Serial Number is required for 'By Serial'.", "danger"); return redirect(url_for("index"))
-    if method == "serial" and not SERIAL_RE.fullmatch(serial):
-        flash("Serial Number must be alphanumeric only (it is embedded in a DHCP match regex).", "danger")
+           "option60_confirmed": "yes"}
+    if not serial or not SERIAL_RE.fullmatch(serial):
+        flash("Serial Number is required and must be alphanumeric.", "danger")
         return redirect(url_for("index"))
-    if method == "mac" and not mac:
-        flash("MAC Address is required for 'By MAC'.", "danger"); return redirect(url_for("index"))
-    if not host:
-        flash("Hostname is required.", "danger"); return redirect(url_for("index"))
-    # Config file is OPTIONAL: leave blank to let the device use the shared Generic Profile
-    # (matched by vendor-class). A By-MAC device only needs a DHCP IP if it has its own config.
-    if method == "mac" and row["assignment_type"] == "AUTO" and not row["ip_address"]:
-        flash("DHCP IP is required for a By-MAC Auto device so the resolver can find its lease.", "danger")
-        return redirect(url_for("index"))
+    if not row["expected_model"]:
+        flash("Expected Model is required.", "danger"); return redirect(url_for("index"))
     if row["assignment_type"] not in ASSIGNMENT_TYPES:
         flash("Assignment method must be STATIC or AUTO. Legacy DHCP_ONLY records remain read-only.", "danger")
         return redirect(url_for("index"))
 
     existing_assignment = read_assignments().get(device_key(row), {})
-    if existing_assignment.get("assignment_type") == "AUTO" and existing_assignment.get("state") == "DELIVERED":
-        flash("Delivered Auto assignment is protected. Use Force Release with a reason before changing this mapping.", "danger")
+    if existing_assignment.get("filename"):
+        flash("This serial already has an assignment. Release Assignment before changing its override.", "danger")
         return redirect(url_for("index"))
 
-    existing = [r for r in read_devices() if r.get("hostname") != host]
+    existing = [r for r in read_devices()
+                if str(r.get("serial_number") or "").lower() != serial.lower()]
     errors = validate_device_row(row, existing)
     if errors:
         flash("Mapping was not saved:\n" + "\n".join(errors), "danger")
         return redirect(url_for("index"))
 
-    rows = [r for r in read_devices() if r.get("hostname") != host]
+    rows = [r for r in read_devices()
+            if str(r.get("serial_number") or "").lower() != serial.lower()]
     rows.append(row); write_devices(rows)
     if row["assignment_type"] == "STATIC":
         release_conflicting_auto_for_static(row)
     ok, msg = deploy_dhcpd(generate_dhcpd())
-    append_history("STATIC_MAPPING" if row["assignment_type"] == "STATIC" else "SET_ASSIGNMENT_TYPE",
+    append_history("DEVICE_OVERRIDE",
                    device_key(row), operator=operator_name(), filename=row.get("specific_config_file", ""),
                    new_value=row["assignment_type"])
     flash(msg, "success" if ok else "danger")
@@ -3409,14 +4263,14 @@ def add_profile():
     if operating_mode() != "ZTP_PROVISIONING":
         flash("Generic Profiles are disabled outside ZTP_PROVISIONING.", "warning")
         return redirect(url_for("index"))
+    prefix = request.form.get("vendor_prefix", request.form.get("vendor_class", "")).strip()
     p = {"label": request.form.get("label", "").strip(),
-         "vendor_class": request.form.get("vendor_class", "").strip(),
-         "match_mode": request.form.get("match_mode", "contains").strip() or "contains",
-         "config_file": request.form.get("config_file", "").strip(),
-         "assignment_type": request.form.get("assignment_type", "STATIC").strip().upper() or "STATIC",
+         "vendor_class": prefix, "vendor_prefix": prefix,
+         "device_model": request.form.get("device_model", "").strip(),
+         "match_mode": "contains", "config_file": "", "assignment_type": "AUTO",
          "pool_name": request.form.get("pool_name", "").strip(),
-         "compatibility_group": request.form.get("compatibility_group", "").strip(),
-         "option60_confirmed": request.form.get("option60_confirmed", "").strip()}
+         "compatibility_group": request.form.get("device_model", "").strip(),
+         "option60_confirmed": "yes"}
     existing = [r for r in read_profiles()
                 if not (r.get("vendor_class") == p["vendor_class"]
                         and r.get("match_mode", "contains") == p["match_mode"])]
@@ -3434,6 +4288,22 @@ def add_profile():
     append_history("PROFILE_UPDATE", operator=operator_name(), new_value=json.dumps(p, ensure_ascii=False))
     flash(f"Profile saved. {msg}", "success" if ok else "warning")
     return redirect(url_for("index"))
+
+
+@app.route("/profiles/test-option60", methods=["POST"])
+def test_option60():
+    raw = request.form.get("option60", "").strip()
+    identity, error = parse_option60_identity(raw)
+    if error:
+        return jsonify(ok=False, error=error, raw_option60=raw), 422
+    profile = identity.get("profile")
+    if not profile:
+        return jsonify(ok=False, error="PROFILE_NOT_MATCHED", raw_option60=raw,
+                       detected_serial=identity["serial"], vendor_prefix=identity["vendor_prefix"]), 404
+    return jsonify(ok=True, matched_profile=profile.get("label", ""),
+                   detected_model=profile.get("device_model", ""),
+                   detected_serial=identity["serial"], selected_pool=profile.get("pool_name", ""),
+                   raw_option60=raw)
 
 
 @app.route("/delete_profile/<int:idx>", methods=["POST"])
@@ -3608,6 +4478,59 @@ def export(kind, fmt):
     return _csv_response(rows, fields, f"{kind}.csv")
 
 
+@app.route("/export/deployment-report.<fmt>")
+def export_deployment_report(fmt):
+    """Export a serial-first deployment report as CSV or two-sheet XLSX."""
+    filtered = request.args.get("scope", "full").lower() == "filtered"
+    rows = deployment_rows(apply_filters=filtered)
+    fields = ["serial", "model", "config", "result", "last_update"]
+    report_rows = [{field: row.get(field, "") for field in fields} for row in rows]
+    if fmt == "csv":
+        return _csv_response(report_rows, fields, "deployment-report.csv")
+    if fmt != "xlsx":
+        return Response("Unsupported report format.\n", 404, mimetype="text/plain")
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return Response("XLSX export requires openpyxl; install requirements.txt.\n", 503,
+                        mimetype="text/plain")
+    workbook = Workbook()
+    summary = workbook.active
+    summary.title = "Summary"
+    metrics = deployment_metrics(rows)
+    summary.append(["Metric", "Value"])
+    for label, key in (("Expected", "expected"), ("Observed", "observed"),
+                       ("Completed", "completed"), ("In Progress", "in_progress"),
+                       ("Error", "error"), ("Remaining", "remaining")):
+        summary.append([label, metrics[key]])
+    summary.append([])
+    summary.append(["Model", "Observed", "Completed", "In Progress", "Error"])
+    models = sorted({row.get("model") or "Unknown" for row in rows})
+    for model in models:
+        model_rows = [row for row in rows if (row.get("model") or "Unknown") == model]
+        summary.append([model, len({row.get("serial") for row in model_rows if row.get("serial")}),
+                        sum(row["result"] == "Completed" for row in model_rows),
+                        sum(row["result"] == "In Progress" for row in model_rows),
+                        sum(row["result"] == "Error" for row in model_rows)])
+    devices_sheet = workbook.create_sheet("Devices")
+    devices_sheet.append(["Serial Number", "Model", "Config File", "Result", "Last Update"])
+    for row in rows:
+        devices_sheet.append([row.get("serial", ""), row.get("model", ""), row.get("config", ""),
+                              row.get("result", ""), row.get("last_update", "")])
+    output = io.BytesIO()
+    workbook.save(output)
+    return Response(output.getvalue(),
+                    mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename=deployment-report.xlsx"})
+
+
+@app.route("/export/deployment-logs.csv")
+def export_deployment_logs():
+    rows = simplified_log_rows(100000)
+    fields = ["time", "serial", "config", "result", "message"]
+    return _csv_response(rows, fields, "deployment-logs.csv")
+
+
 @app.route("/import/<kind>", methods=["POST"])
 def import_data(kind):
     file = request.files.get("import_file")
@@ -3731,9 +4654,9 @@ def _parse_nginx_line(line: str) -> dict | None:
 def _download_device_key(client_ip: str) -> str:
     leases = parse_leases() if is_dhcp_mode() else {}
     lease = leases.get(client_ip) or {}
-    mac_key = device_key(mac=lease.get("mac", ""))
-    if mac_key:
-        return mac_key
+    serial_key = device_key(serial=lease.get("serial", ""))
+    if serial_key:
+        return serial_key
     for key, assignment in read_assignments().items():
         if assignment.get("current_dhcp_ip") == client_ip or assignment.get("dhcp_ip") == client_ip:
             return key
@@ -3765,19 +4688,22 @@ def _record_download_event(parsed: dict) -> dict:
         state = "FETCH_FAILED" if is_ztp else "DOWNLOAD_FAILED"
     request_id = parsed.get("request_id") or hashlib.sha256(json.dumps(parsed, sort_keys=True).encode()).hexdigest()[:24]
     record = dict(parsed)
+    source = "MANUAL" if re.match(r"^/ztp/config/[^/]+", uri) else "AUTO"
+    key = _download_device_key(client_ip)
+    serial = key.split(":", 1)[1] if key.startswith("serial:") else ""
     record.update({"request_id": request_id, "filename": filename, "expected_bytes": expected,
                    "actual_bytes": actual, "download_state": state,
-                   "download_timestamp": parsed.get("time") or _now_iso(), "mode": mode})
+                   "download_timestamp": parsed.get("time") or _now_iso(), "mode": mode,
+                   "source": source, "serial": serial})
     records = read_download_records()
     if request_id in records:
         return records[request_id]
     records[request_id] = record
     write_download_records(records)
-    key = _download_device_key(client_ip)
     history_event = {"event_type": state if is_ztp else "HTTP_DOWNLOAD", "filename": filename,
                      "ip": client_ip, "http_status": status_code,
                      "bytes_sent": actual, "expected_bytes": expected,
-                     "state": state, "request_id": request_id}
+                     "state": state, "request_id": request_id, "serial": serial, "source": source}
     if is_ztp and key:
         with _exclusive_lock(ALLOCATION_LOCK):
             provisioning_state = read_provisioning_state()
@@ -3840,6 +4766,7 @@ def reconcile_dhcp_events() -> list[dict]:
     if not is_dhcp_mode():
         return list(read_device_runtime().values())[-200:]
     runtime = read_device_runtime()
+    leases = parse_leases()
     settings = read_settings()
     window_seconds = _safe_int(settings, "dhcp_retry_window_minutes", 5) * 60
     now = time.time()
@@ -3847,17 +4774,20 @@ def reconcile_dhcp_events() -> list[dict]:
         event = _parse_dhcp_event(line)
         if not event:
             continue
-        key = device_key(mac=event["mac"], client_id=event["client_id"], ip=event["ip"])
+        lease = leases.get(event["ip"]) or {}
+        key = device_key(serial=lease.get("serial", ""))
         if not key:
             continue
         item = runtime.setdefault(key, {"device_key": key, "first_seen": event["timestamp"],
                                         "request_count_total": 0, "request_times": [], "events": []})
         item["last_seen"] = event["timestamp"]
         item["last_event"] = event["event"]
-        item["mac"] = event["mac"] or item.get("mac", "")
+        item["serial"] = lease.get("serial", "") or item.get("serial", "")
+        item["observed_mac"] = event["mac"] or lease.get("mac", "") or item.get("observed_mac", "")
+        item["mac"] = item["observed_mac"]
         item["client_id"] = event["client_id"] or item.get("client_id", "")
         item["dhcp_ip"] = event["ip"] or item.get("dhcp_ip", "")
-        item["option60"] = event["option60"] or item.get("option60", "")
+        item["option60"] = lease.get("option60", "") or item.get("option60", "")
         item.setdefault("events", []).append(event)
         if event["event"] in {"DHCPDISCOVER", "DHCPREQUEST"}:
             item["request_count_total"] = int(item.get("request_count_total", 0) or 0) + 1
@@ -3922,9 +4852,12 @@ def nginx_config_fetches(n: int = 200) -> list[dict]:
 
 
 def dhcp_option60_lines(n: int = 100) -> list[str]:
-    """Return raw DHCP log lines that expose vendor-class / Option 60 data."""
+    """Return authoritative lease Option 60 values plus troubleshooting logs."""
     patterns = re.compile(r"vendor-class-identifier|vendor-class|option\s*60|option-60", re.I)
-    return [line for line in tail(SYSLOG_FILE, n=2000) if patterns.search(line)][-n:]
+    lease_lines = [f'{ip} vendor-string "{lease.get("option60", "")}"'
+                   for ip, lease in parse_leases().items() if lease.get("option60")]
+    syslog_lines = [line for line in tail(SYSLOG_FILE, n=2000) if patterns.search(line)]
+    return (lease_lines + syslog_lines)[-n:]
 
 
 LOG_SOURCES = {
@@ -4001,8 +4934,69 @@ def _manual_config_response(fname: str):
     path = NGINX_DIR / filename
     if not path.is_file():
         return Response("Config file was not found.\n", status=404, mimetype="text/plain")
-    append_history("MANUAL_CONFIG_DOWNLOAD", operator=operator_name(), filename=filename,
-                   ip=request.remote_addr or "", message="Explicit /ztp/config/ download")
+    if operating_mode() == "ZTP_PROVISIONING":
+        client_ip = request.remote_addr or ""
+        lease = parse_leases().get(client_ip)
+        if not _lease_is_active(lease):
+            return Response("LEASE_NOT_FOUND\n", status=404, mimetype="text/plain")
+        identity, identity_error = parse_option60_identity(lease.get("option60", ""))
+        if identity_error:
+            append_history(identity_error, ip=client_ip, filename=filename, source="MANUAL")
+            return Response(identity_error + "\n", status=409, mimetype="text/plain")
+        serial = identity["serial"]
+        key = device_key(serial=serial)
+        profile = identity.get("profile")
+        override = next((item for item in read_devices()
+                         if str(item.get("serial_number") or "").lower() == serial.lower()), None)
+        model = str((override or {}).get("expected_model") or (override or {}).get("device_type") or
+                    (profile or {}).get("device_model") or "").strip()
+        with _exclusive_lock(ALLOCATION_LOCK):
+            state = read_provisioning_state()
+            meta = state["configs"].get(filename)
+            if not meta:
+                return Response("CONFIG_INVALID\n", status=404, mimetype="text/plain")
+            existing = state["devices"].get(key)
+            existing_filename = str((existing or {}).get("config") or (existing or {}).get("filename") or "")
+            owner_serial = str(meta.get("assigned_serial") or "").strip().lower()
+            owner_key = str(meta.get("assigned_device") or "")
+            if (existing_filename and existing_filename != filename) or (
+                    owner_serial and owner_serial != serial.lower()) or (owner_key and owner_key != key):
+                append_history("CONFIG_OWNERSHIP_CONFLICT", key, serial=serial, ip=client_ip,
+                               filename=filename, source="MANUAL")
+                return Response("CONFIG_OWNERSHIP_CONFLICT\n", status=409, mimetype="text/plain")
+            if config_match_reason(meta, model, automatic=True):
+                append_history("MODEL_CONFIG_MISMATCH", key, serial=serial, ip=client_ip,
+                               filename=filename, source="MANUAL")
+                return Response("MODEL_CONFIG_MISMATCH\n", status=409, mimetype="text/plain")
+            now = _now_iso()
+            assignment = dict(existing or {})
+            assignment.update({
+                "device_key": key, "serial": serial,
+                "observed_mac": normalize_mac(lease.get("mac", "")),
+                "mac": normalize_mac(lease.get("mac", "")),
+                "current_dhcp_ip": client_ip, "dhcp_ip": client_ip,
+                "option60": identity["raw_option60"], "raw_option60": identity["raw_option60"],
+                "vendor_prefix": identity["vendor_prefix"], "detected_model": model,
+                "config": filename, "filename": filename, "assigned_filename": filename,
+                "assigned_checksum": meta.get("checksum", config_sha256(path)),
+                "assigned_file_size": path.stat().st_size,
+                "state": assignment.get("state") or "ASSIGNED", "status": "ASSIGNED",
+                "assignment_type": "MANUAL", "assignment_source": "Manual",
+                "first_seen": assignment.get("first_seen") or now, "last_seen": now,
+                "assigned_at": assignment.get("assigned_at") or now, "updated_at": now,
+                "expected_bytes": path.stat().st_size,
+            })
+            state["devices"][key] = assignment
+            meta.update({"status": "ASSIGNED", "assigned_device": key,
+                         "assigned_serial": serial, "updated_at": now})
+            commit_provisioning_state(state)
+        append_history("MANUAL_CONFIG_DOWNLOAD", key, operator=operator_name(), serial=serial,
+                       filename=filename, ip=client_ip, source="MANUAL", http_status=200,
+                       bytes_sent=path.stat().st_size)
+    else:
+        append_history("MANUAL_CONFIG_DOWNLOAD", operator=operator_name(), filename=filename,
+                       ip=request.remote_addr or "", source="MANUAL",
+                       message="Explicit /ztp/config/ download")
     return send_from_directory(NGINX_DIR, filename,
                                as_attachment=False,
                                mimetype="text/plain",
@@ -4040,6 +5034,7 @@ def main():
     host = os.environ.get("ZTP_HOST", "0.0.0.0")
     port = int(os.environ.get("ZTP_PORT", "8080"))
     migrate_provisioning_state()
+    migrate_serial_first_state()
     repair_state_consistency()
     if DEV_MODE:
         app.run(host=host, port=port, debug=True)

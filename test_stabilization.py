@@ -116,9 +116,10 @@ class StabilizationTests(unittest.TestCase):
     def test_overview_has_exactly_four_primary_menu_items(self):
         self.settings()
         html = app.app.test_client().get("/?view=overview").get_data(as_text=True)
-        for label in ("Overview", "Config Files", "Logs", "Settings"):
+        for label in ("Overview", "Config Inventory", "Logs", "Settings"):
             self.assertIn(label, html)
-        self.assertIn("DHCP_FILE_SERVER" if app.operating_mode() == "DHCP_FILE_SERVER" else "Recent provisioning clients", html)
+        self.assertIn("Operating Mode", html)
+        self.assertIn("Deployment Status", html)
         self.assertNotIn("Health", html)
         self.assertNotIn("SSH credentials", html)
 

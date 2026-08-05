@@ -1,61 +1,124 @@
-# ztp-app v26.09.2
+# ztp-app v27.0.0
 
-Vendor-neutral Juniper ZTP operations console: Flask + Nginx + optional ISC DHCP. It runs on an isolated L2 ZTP VLAN; devices receive DHCP, fetch a config over HTTP, and commit it themselves.
+Serial-first Juniper ZTP operations console using Flask, Nginx and ISC DHCP on an isolated Layer-2 deployment network.
+
+## What changed in v27
+
+- DHCP Option 60 is stored in `dhcpd.leases` as `vendor-string`; syslog is troubleshooting-only.
+- Serial Number is the provisioning identity. MAC and DHCP IP are observations only.
+- Resolver priority is: existing serial assignment, exact-serial Device Override, exact-prefix Vendor Profile.
+- Every Vendor Profile has one device model and one named config pool. There is no global `AVAILABLE` fallback.
+- UI results are only `In Progress`, `Completed`, and `Error`.
+- Operators can test Option 60, release an assignment, export deployment reports and reset the workspace safely.
+- Legacy MAC keys, Specific Device rows, Contains/Regex profiles and `VERIFIED` states remain migratable and auditable.
 
 ## Operating modes
 
-| Mode | DHCP | Resolver | Intended use |
-|---|---|---|---|
-| `ZTP_PROVISIONING` | network + ZTP options | `/ztp/config` | MAC-first ordered project allocation |
-| `DHCP_FILE_SERVER` | network parameters only | none | DHCP plus manual `/configs/<file>` downloads |
-| `FILE_SERVER_ONLY` | disabled/stopped | none | Nginx/Flask file server only |
+- `ZTP_PROVISIONING`: DHCP, lease Option 60 capture, automatic `/ztp/config` resolver and manual `/ztp/config/<filename>` download.
+- `DHCP_FILE_SERVER`: DHCP network parameters plus manual file download; no automatic assignment.
+- `FILE_SERVER_ONLY`: file server only. This advanced mode stops and disables ISC DHCP.
 
-`FULL_ZTP` is migrated to `ZTP_PROVISIONING`. Legacy `DHCP_ONLY` records remain readable/auditable but cannot be created or resolved into a config.
+Changing mode does not delete settings, leases, assignments, configs, profiles or logs.
 
-## Safety guarantees
+## Serial-first allocation
 
-- DHCP candidate is generated, checked with `dhcpd -t`, backed up, atomically installed, and rolled back if restart fails. DHCP deployment restarts only `isc-dhcp-server`; Nginx is not restarted.
-- Canonical project, device assignment, and config ownership live in `/var/lib/ztp-app/provisioning_state.json` and commit under one global lock with temp + `fsync` + `os.replace()`.
-- The resolver uses normalized MAC as its identity. A matched Generic Profile may restrict a new MAC to one named allocation pool; existing assignments are always reused.
-- Config uploads are checksum-aware (`ADDED`, `UPDATED`, `UNCHANGED`, `PROTECTED`, `FAILED`). Reserved/fetching/delivered/active files cannot be overwritten or deleted.
-- ZTP delivery is promoted only after structured Nginx reconciliation proves a complete response. Partial 200 and HTTP errors remain visible failures; cursors survive log rotation.
-- Export/import ZIP has a manifest and checksums and excludes credentials, admin hashes, and the Flask secret. Import validates and backs up before atomic restore; it never starts DHCP.
+Supported Option 60 examples:
 
-## Install on Ubuntu VM
-
-Use an Ubuntu VM/appliance with a bridged NIC on the ZTP VLAN. WSL2 NAT is not suitable for a real DHCP server.
-
-```bash
-cd ~/projects/ztp-app
-sudo BRIDGE_IF=<ztp-interface> deploy/install.sh
+```text
+Juniper-ex4100-h-12mp-GE4825AW015
+Juniper-ex4100-24p-GE4825AW016
+Juniper-ex4100-24t-GE4825AW017
 ```
 
-The installer creates a Python venv, Nginx, `/var/lib/ztp-app`, and `ztp-app.service`. It does not automatically start DHCP when a mode is selected; use the UI Apply action after the interface and pool checks pass.
+The application splits each value into a literal vendor/model prefix and an alphanumeric serial suffix. A new assignment is rejected when Option 60 is unavailable, the serial cannot be parsed, the profile is ambiguous, the named pool is empty, the config model differs or another serial owns the file.
 
-### One Windows 11 laptop topology
+Recommended profiles:
 
-Do not run the production DHCP listener inside WSL2. WSL2/NAT does not reliably deliver Layer-2 DHCP broadcasts to the Linux namespace, so Windows Wireshark may see `DHCPDISCOVER` while `dhcpd` in WSL sees nothing. Use two NICs: Wi-Fi for Internet and a USB/Ethernet NIC for ZTP. Create a Hyper-V **External Virtual Switch** bound only to the ZTP NIC, then attach an Ubuntu VM to that switch. Put the VM's bridged interface on the ZTP subnet and install/run `isc-dhcp-server` there. WSL2 may remain the development/UI environment.
+```text
+EX4100-H-12MP
+Vendor Prefix: Juniper-ex4100-h-12mp-
+Device Model: EX4100-H-12MP
+Config Pool: OXISANTA_EX4100_H_12MP
 
-On Windows 11 Home, use VirtualBox with **Bridged Adapter** bound to the ZTP NIC instead of Hyper-V. Do not use Wi-Fi sharing, NAT, or a router between the VM and the ZTP switch.
+EX4100-24P
+Vendor Prefix: Juniper-ex4100-24p-
+Device Model: EX4100-24P
+Config Pool: OXISANTA_EX4100_24P
 
-## UI workflow
+EX4100-24T
+Vendor Prefix: Juniper-ex4100-24t-
+Device Model: EX4100-24T
+Config Pool: OXISANTA_EX4100_24T
+```
 
-1. Settings → choose mode. Entering `FILE_SERVER_ONLY` requires confirmation to stop/disable DHCP. Entering a DHCP mode is saved without starting until Apply.
-2. Refresh interfaces; select Internet and ZTP interfaces. The ZTP interface must be physically linked, have IPv4 equal to Server IP, and differ from Internet.
-3. Suggest the pool using CIDR mask length; verify subnet/ranges and that no other DHCP server shares the L2 segment.
-4. Upload and validate the ordered config pool. Set the expected project size, resolve activation checks, and change the project to `ACTIVE`.
-5. Use the recent client view for operations and CSV/XLSX for the full persistent mapping. Archive never deletes history; delivered reset requires review and a separate config release.
-6. Test two or three devices, verify unique MAC-to-file ownership and complete-byte delivery, then scale out.
+Existing `OXISANTA_EX4100_PCxx` inventory is migrated to model `EX4100-H-12MP` and pool `OXISANTA_EX4100_H_12MP`. Office/MGMT filenames are not included by this automatic migration.
 
-### EX4100 OXISANTA pool mapping
+## Operator workflow
 
-For Vendor ID `Juniper-ex4100-h-12mp-xxx`, create a Generic Profile with `Contains`, `AUTO`, `Option 60 confirmed = Yes`, and allocation pool `OXISANTA_EX4100`. In Config Files, set the same pool name on `OXISANTA_EX4100_PC01.conf`, `OXISANTA_EX4100_PC02.conf`, and the remaining PC files; set their allocation order. EX4100 clients are allocated only from that pool. An empty pool returns `PROFILE_POOL_EMPTY` and never falls back to EX4400 files.
+1. Open Settings and apply `ZTP Provisioning`.
+2. Refresh interfaces, select different Internet and ZTP interfaces, then validate the RFC1918 DHCP subnet and pool.
+3. Upload configs in Config Inventory. Set one Model, Pool and allocation order on every allocatable file.
+4. Create a Vendor Profile with the exact prefix, model and pool.
+5. Use Test Option 60 with a real value such as `Juniper-ex4100-h-12mp-GE4825AW015`.
+6. Set the deployment project to `ACTIVE` only after activation checks pass.
+7. Connect one device. Confirm Serial Number, model, config and result under Deployment Status before scaling out.
+8. `Completed` means the server delivered HTTP 200 with exactly the expected file byte count. It does not claim that Junos committed the configuration.
 
-`/configs/` is blocked in `ZTP_PROVISIONING` so devices cannot bypass the resolver. For an explicit manual load, use `/ztp/config/` to list files or `/ztp/config/<filename>` to download one file; the exact `/ztp/config` URL remains the automatic resolver. Directory listing also remains available in `DHCP_FILE_SERVER` and `FILE_SERVER_ONLY`.
+A Device Override matches one exact serial and can select either one exact config or one named pool. Existing assignment always remains first priority.
 
-## State migration
+## Manual config download
 
-On first startup, legacy `assignments.json` and `config_pool.json` are backed up under `migration-backup-provisioning-v1` and migrated idempotently. Legacy files remain as compatibility snapshots. Migrated/new projects start `PAUSED` and preserve existing assignments until an operator activates the project.
+- Automatic resolver: `GET /ztp/config`
+- Explicit file: `GET /ztp/config/<filename>`
+
+In ZTP mode, an explicit file download requires an active lease with a valid serial. An Available file becomes owned by that serial; the same serial may download it again, while another serial receives `CONFIG_OWNERSHIP_CONFLICT`. Manual download never selects a fallback pool or changes another assignment.
+
+## State and safety
+
+- Canonical state: `/var/lib/ztp-app/provisioning_state.json`.
+- Project, assignment and config ownership changes use one `fcntl` allocation lock.
+- JSON writes use backup, temp file, `fsync` and `os.replace()`.
+- Audit history remains append-only JSONL.
+- DHCP deploy validates a candidate with `dhcpd -t`, backs up the active file, atomically replaces it, restarts only `isc-dhcp-server` and rolls back on failure.
+- Config validation requires `root-authentication`, blocks `chassis auto-image-upgrade`, checks file existence and URL length.
+- Migration backs up state before converting MAC keys to serial keys. Records without a serial become `SERIAL_NOT_PARSED`; their owned config is not returned to the pool automatically.
+
+`Reset for Retest` clears leases, observed clients, assignments, runtime/download records and ownership while keeping settings, configs, profiles, overrides, logs and audit history.
+
+`Reset Clean Workspace` also removes uploaded configs, config metadata, overrides and profiles. Both presets stop DHCP, create a backup, update state atomically, move parser cursors to EOF, restart/validate DHCP and restore the backup if the operation fails.
+
+## Install on an Ubuntu VM
+
+Use a bridged Ubuntu VM connected directly to the isolated ZTP NIC/VLAN. WSL2 NAT does not reliably carry DHCP broadcasts from physical switches.
+
+```bash
+cd ~/ztp-app
+sudo env BRIDGE_IF=eth1 ZTP_MODE=ZTP_PROVISIONING bash deploy/install.sh
+sudo nginx -t
+sudo systemctl restart ztp-app.service nginx isc-dhcp-server
+sudo systemctl status ztp-app.service nginx isc-dhcp-server --no-pager
+```
+
+The installer creates `/opt/ztp-app/.venv`; do not use system `pip` or `sudo pip`.
+
+## Update and rollback
+
+```bash
+cd ~/ztp-app
+git status --short
+git pull --ff-only origin main
+sudo env BRIDGE_IF=eth1 ZTP_MODE=ZTP_PROVISIONING bash deploy/install.sh
+```
+
+Verify:
+
+```bash
+sudo dhcpd -t -cf /etc/dhcp/dhcpd.conf
+systemctl is-active ztp-app.service nginx isc-dhcp-server
+grep -n 'set vendor-string' /etc/dhcp/dhcpd.conf
+```
+
+Rollback source by checking out the previous known-good commit and rerunning the installer. Runtime state remains under `/var/lib/ztp-app`; use Export All before major maintenance.
 
 ## Development and tests
 
@@ -63,8 +126,5 @@ On first startup, legacy `assignments.json` and `config_pool.json` are backed up
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-ZTP_DEV=1 ZTP_WEBROOT=./_webroot ZTP_DHCPD=./_dhcpd.conf python app.py
-python -m unittest -v
+ZTP_DEV=1 python -m unittest -v
 ```
-
-The deploy and rollback path is intentionally production-gated: inspect the candidate and the readiness panel before connecting devices.
