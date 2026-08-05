@@ -1,4 +1,4 @@
-# ztp-app v27.0.0 — hướng dẫn vận hành
+# ztp-app v27.0.1 — hướng dẫn vận hành
 
 `ztp-app` là công cụ Juniper ZTP theo Serial Number, chạy bằng Flask, Nginx và ISC DHCP trên một mạng Layer-2 ZTP cô lập.
 
@@ -12,6 +12,8 @@
 - Model và pool được tách tuyệt đối.
 - UI chỉ hiển thị ba kết quả: `In Progress`, `Completed`, `Error`.
 - Có Test Option 60, Release Assignment, Deployment Report và hai preset Reset Workspace.
+- Vendor Profile đã lưu được hiển thị và chỉnh sửa theo luồng `Option 60 prefix → model → pool → filename pattern`.
+- Pattern như `OXISANTA_EX4100_PC*` chỉ được áp dụng bên trong đúng named pool, không tạo global fallback.
 
 ## Hai mode chính
 
@@ -229,4 +231,4 @@ pip install -r requirements.txt
 ZTP_DEV=1 python -m unittest -v
 ```
 
-Version hiện tại: **27.0.0**.
+Version hiện tại: **27.0.1**.

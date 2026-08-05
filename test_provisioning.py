@@ -94,7 +94,8 @@ class ProvisioningSafetyTests(unittest.TestCase):
         app.PROFILES_JSON.write_text('[{"label":"auto","vendor_class":"Juniper-ex4100-h-12mp-",'
                                      '"vendor_prefix":"Juniper-ex4100-h-12mp-","device_model":"EX4100-H-12MP",'
                                      '"match_mode":"contains","config_file":"","assignment_type":"AUTO",'
-                                     '"pool_name":"default","option60_confirmed":"yes"}]', encoding="utf-8")
+                                     '"pool_name":"default","config_pattern":"*",'
+                                     '"option60_confirmed":"yes"}]', encoding="utf-8")
         body, filename, status = app.dynamic_config_result("192.168.250.10")
         self.assertEqual((filename, status), ("auto.conf", 200))
         self.assertIn(b"root-authentication", body)
@@ -120,7 +121,7 @@ class ProvisioningSafetyTests(unittest.TestCase):
         app.PROFILES_JSON.write_text('[{"label":"fallback","vendor_class":"Juniper-ex4100-h-12mp-",'
                                      '"vendor_prefix":"Juniper-ex4100-h-12mp-","device_model":"EX4100-H-12MP",'
                                      '"match_mode":"contains","assignment_type":"AUTO","pool_name":"default",'
-                                     '"option60_confirmed":"yes"}]', encoding="utf-8")
+                                     '"config_pattern":"*","option60_confirmed":"yes"}]', encoding="utf-8")
         body, filename, status = app.dynamic_config_result("192.168.250.10")
         self.assertEqual((filename, status), ("static.conf", 200))
         self.assertIn(b"root-authentication", body)

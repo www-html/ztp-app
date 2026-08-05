@@ -58,11 +58,12 @@ class SerialFirstWorkflowTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def add_profile(self, prefix="Juniper-ex4100-h-12mp-", model="EX4100-H-12MP",
-                    pool="H12"):
+                    pool="H12", pattern="*"):
         rows = app.read_profiles()
         rows.append({"label": model, "vendor_class": prefix, "vendor_prefix": prefix,
                      "device_model": model, "match_mode": "contains", "config_file": "",
                      "assignment_type": "AUTO", "pool_name": pool,
+                     "config_pattern": pattern,
                      "compatibility_group": model, "option60_confirmed": "yes"})
         app.write_profiles(rows)
 
@@ -122,6 +123,22 @@ class SerialFirstWorkflowTests(unittest.TestCase):
         self.assertEqual("", error)
         self.assertEqual("right.conf", assignment["filename"])
         self.assertEqual("serial:ge4825aw015", assignment["device_key"])
+
+    def test_profile_filename_pattern_is_enforced_inside_named_pool(self):
+        self.add_profile(pattern="OXISANTA_EX4100_PC*")
+        self.add_config("OTHER.conf", pool="H12", order=1)
+        self.add_config("OXISANTA_EX4100_PC001.conf.txt", pool="H12", order=2)
+        assignment, error = self.reserve()
+        self.assertEqual("", error)
+        self.assertEqual("OXISANTA_EX4100_PC001.conf.txt", assignment["filename"])
+        self.assertEqual("OXISANTA_EX4100_PC*", assignment["config_pattern"])
+
+    def test_profile_filename_pattern_without_matching_config_fails_closed(self):
+        self.add_profile(pattern="OXISANTA_EX4100_PC*")
+        self.add_config("OTHER.conf", pool="H12")
+        assignment, error = self.reserve()
+        self.assertIsNone(assignment)
+        self.assertEqual("PROFILE_PATTERN_EMPTY", error)
 
     def test_no_profile_and_ambiguous_profile_fail_closed(self):
         self.add_config("one.conf")
@@ -300,6 +317,50 @@ class SerialFirstWorkflowTests(unittest.TestCase):
         self.assertIn("Test Option 60", text)
         self.assertNotIn("By MAC", text)
         self.assertNotIn(">Verify<", text)
+
+    def test_ui_shows_mapping_pattern_inventory_and_edit_action(self):
+        self.add_profile(pattern="OXISANTA_EX4100_PC*")
+        self.add_config("OXISANTA_EX4100_PC001.conf.txt")
+        response = app.app.test_client().get("/?view=settings")
+        text = response.get_data(as_text=True)
+        self.assertIn("Saved Vendor Profile Mappings", text)
+        self.assertIn("OXISANTA_EX4100_PC*", text)
+        self.assertIn("1 matched", text)
+        self.assertIn('/profiles/0/edit', text)
+        self.assertIn("Save Changes", text)
+
+    def test_saved_profile_can_be_edited_outside_ztp_mode(self):
+        self.add_profile(pattern="OLD*")
+        settings = app.read_settings()
+        settings.update({"active_mode": "DHCP_FILE_SERVER",
+                         "operating_mode": "DHCP_FILE_SERVER",
+                         "global_mode": "DHCP_FILE_SERVER"})
+        app.write_settings(settings)
+        with mock.patch.object(app, "deploy_dhcpd", return_value=(True, "candidate valid")):
+            response = app.app.test_client().post("/profiles/0/edit", data={
+                "label": "EX4100-H-12MP",
+                "vendor_prefix": "Juniper-ex4100-h-12mp-",
+                "device_model": "EX4100-H-12MP",
+                "pool_name": "OXISANTA_EX4100_H_12MP",
+                "config_pattern": "OXISANTA_EX4100_PC*",
+            })
+        self.assertEqual(302, response.status_code)
+        profile = app.read_profiles()[0]
+        self.assertEqual("OXISANTA_EX4100_PC*", profile["config_pattern"])
+        self.assertEqual("OXISANTA_EX4100_H_12MP", profile["pool_name"])
+
+    def test_legacy_profile_pattern_migration_is_backed_up_and_idempotent(self):
+        legacy = [{"label": "OXISANTA_EX4100", "vendor_class": "Juniper-ex4100-h-12mp-",
+                   "vendor_prefix": "Juniper-ex4100-h-12mp-", "device_model": "EX4100-H-12MP",
+                   "match_mode": "contains", "config_file": "", "assignment_type": "AUTO",
+                   "pool_name": "OXISANTA_EX4100_H_12MP", "compatibility_group": "",
+                   "option60_confirmed": "yes"}]
+        app._atomic_write_json(app.PROFILES_JSON, legacy)
+        self.assertTrue(app.migrate_profile_patterns())
+        self.assertFalse(app.migrate_profile_patterns())
+        self.assertEqual("OXISANTA_EX4100_PC*", app.read_profiles()[0]["config_pattern"])
+        self.assertTrue((app.DATA_DIR / "migration-backup-profile-pattern-v27.0.1" /
+                         "generic_profiles.json").exists())
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# ztp-app v27.0.0
+# ztp-app v27.0.1
 
 Serial-first Juniper ZTP operations console using Flask, Nginx and ISC DHCP on an isolated Layer-2 deployment network.
 
@@ -11,6 +11,8 @@ Serial-first Juniper ZTP operations console using Flask, Nginx and ISC DHCP on a
 - UI results are only `In Progress`, `Completed`, and `Error`.
 - Operators can test Option 60, release an assignment, export deployment reports and reset the workspace safely.
 - Legacy MAC keys, Specific Device rows, Contains/Regex profiles and `VERIFIED` states remain migratable and auditable.
+- Saved Vendor Profiles are visible and editable as `Option 60 prefix -> model -> pool -> filename pattern` mappings.
+- A filename pattern such as `OXISANTA_EX4100_PC*` is enforced inside the named pool; it never enables a global fallback.
 
 ## Operating modes
 

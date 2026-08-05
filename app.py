@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.0]
+ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.1]
 Author: binh.trinh
 
 Matching:
@@ -10,8 +10,8 @@ Matching:
   - Config allocation is fail-closed inside one model-isolated named pool.
 File-server advertised via Option 66 (tftp-server-name).
 
-v27.0.0: serial-first identity, lease-backed Option 60 capture, model-isolated
-pools, simplified three-result UI, deployment reports and safe workspace reset.
+v27.0.1: visible and editable Vendor Profile mappings with fail-closed config
+filename patterns inside model-isolated pools.
 
 Run:
   ZTP_DEV=1 python app.py            # dev (Flask reloader)
@@ -20,6 +20,7 @@ Run:
 from __future__ import annotations
 
 import csv
+import fnmatch
 import hashlib
 import io
 import ipaddress
@@ -160,10 +161,14 @@ SERIAL_RE       = re.compile(r"^[A-Za-z0-9]+$")
 VENDOR_CLASS_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 MAC_RE          = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 PROFILE_REGEX_TEXT_RE = re.compile(r'^[^\r\n"]{1,160}$')
+CONFIG_PATTERN_RE = re.compile(r"^[A-Za-z0-9_.?*\-]{1,160}$")
 KNOWN_VENDOR_PREFIXES = {
     "juniper-ex4100-h-12mp-": ("EX4100-H-12MP", "OXISANTA_EX4100_H_12MP"),
     "juniper-ex4100-24p-": ("EX4100-24P", "OXISANTA_EX4100_24P"),
     "juniper-ex4100-24t-": ("EX4100-24T", "OXISANTA_EX4100_24T"),
+}
+KNOWN_CONFIG_PATTERNS = {
+    "juniper-ex4100-h-12mp-": "OXISANTA_EX4100_PC*",
 }
 DEVICE_FIELDS = ["match_method", "serial_number", "mac_address", "device_type", "expected_model",
                  "hostname", "ip_address", "mgmt_ip", "client_id", "compatibility_group",
@@ -171,7 +176,7 @@ DEVICE_FIELDS = ["match_method", "serial_number", "mac_address", "device_type", 
 PROFILE_MATCH_MODES = ["contains", "regex"]
 PROFILE_FIELDS = ["label", "vendor_class", "vendor_prefix", "device_model", "match_mode",
                   "config_file", "assignment_type", "pool_name", "compatibility_group",
-                  "option60_confirmed"]
+                  "config_pattern", "option60_confirmed"]
 SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "range_high",
                    "internet_interface", "ztp_interface", "global_mode", "operating_mode",
                    "active_mode", "pending_mode",
@@ -180,7 +185,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "27.0.0"
+VERSION = "27.0.1"
 
 
 class JsonDataError(RuntimeError):
@@ -403,8 +408,72 @@ def read_profiles():
                 row["pool_name"] = known[1]
             if row.get("assignment_type") == "DHCP_ONLY" and row.get("pool_name"):
                 row["assignment_type"] = "AUTO"
+        row.setdefault("config_pattern", KNOWN_CONFIG_PATTERNS.get(
+            str(row.get("vendor_prefix") or "").lower(), "*"))
     return rows
 def write_profiles(rows): _atomic_write_json(PROFILES_JSON, rows)
+
+
+def profile_config_pattern(profile: dict) -> str:
+    """Return the safe filename glob used inside a profile's named pool."""
+    value = str(profile.get("config_pattern") or "").strip()
+    if value:
+        return value
+    return KNOWN_CONFIG_PATTERNS.get(profile_vendor_prefix(profile).lower(), "*")
+
+
+def filename_matches_profile(filename: str, profile: dict) -> bool:
+    return fnmatch.fnmatchcase(str(filename).lower(), profile_config_pattern(profile).lower())
+
+
+def profile_mapping_rows(profiles=None, pool=None) -> list[dict]:
+    """Build operator-facing profile -> pattern -> config inventory summaries."""
+    profiles = read_profiles() if profiles is None else profiles
+    pool = read_config_pool() if pool is None else pool
+    rows = []
+    for index, profile in enumerate(profiles):
+        pool_name = str(profile.get("pool_name") or "").strip()
+        pool_files = [item for item in pool
+                      if str(item.get("pool_name") or "").strip().lower() == pool_name.lower()]
+        mapped = [item for item in pool_files
+                  if filename_matches_profile(item.get("filename", ""), profile)]
+        row = dict(profile)
+        row.update({
+            "index": index,
+            "config_pattern": profile_config_pattern(profile),
+            "pool_config_count": len(pool_files),
+            "mapped_config_count": len(mapped),
+            "available_config_count": sum(item.get("status") == "AVAILABLE" for item in mapped),
+        })
+        rows.append(row)
+    return rows
+
+
+def migrate_profile_patterns() -> bool:
+    """Persist a recoverable filename pattern for profiles created before v27.0.1."""
+    if not PROFILES_JSON.exists():
+        return False
+    with _exclusive_lock(ALLOCATION_LOCK):
+        raw = _read_json(PROFILES_JSON, [])
+        _validate_string_records(PROFILES_JSON, raw, "profile")
+        changed = False
+        for row in raw:
+            if str(row.get("config_pattern") or "").strip():
+                continue
+            prefix = str(row.get("vendor_prefix") or row.get("vendor_class") or "").lower()
+            row["config_pattern"] = KNOWN_CONFIG_PATTERNS.get(prefix, "*")
+            changed = True
+        if not changed:
+            return False
+        backup_dir = DATA_DIR / "migration-backup-profile-pattern-v27.0.1"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup = backup_dir / PROFILES_JSON.name
+        if not backup.exists():
+            shutil.copy2(PROFILES_JSON, backup)
+        write_profiles(raw)
+    append_history("PROFILE_PATTERN_MIGRATED", operator="system",
+                   profiles=len(raw), backup=str(backup_dir))
+    return True
 
 
 def _valid_ipv4(value: str) -> bool:
@@ -687,6 +756,11 @@ def validate_profile_row(profile: dict, existing=None, settings=None) -> list[st
             errors.append("Device Model is required.")
         if not str(profile.get("pool_name") or "").strip():
             errors.append("Config Pool is required.")
+        pattern = str(profile.get("config_pattern") or "").strip()
+        if not pattern:
+            errors.append("Config Filename Pattern is required.")
+        elif not CONFIG_PATTERN_RE.fullmatch(pattern) or ".." in pattern:
+            errors.append("Config Filename Pattern may use letters, digits, '.', '_', '-', '*' and '?' only.")
         if kind != "AUTO":
             errors.append("New Vendor Profiles must use a named AUTO pool.")
         if profile.get("config_file"):
@@ -2730,13 +2804,18 @@ def _select_serial_candidate(configs: dict, serial: str, key: str, row: dict | N
             return None, "PROFILE_POOL_EMPTY"
         pool_rows = [(filename, meta) for filename, meta in configs.items()
                      if str(meta.get("pool_name") or "").strip().lower() == pool_name.lower()]
-        candidates = [(filename, meta) for filename, meta in pool_rows
+        pattern_rows = pool_rows if row else [
+            (filename, meta) for filename, meta in pool_rows
+            if filename_matches_profile(filename, profile or {})]
+        if profile and not row and pool_rows and not pattern_rows:
+            return None, "PROFILE_PATTERN_EMPTY"
+        candidates = [(filename, meta) for filename, meta in pattern_rows
                       if meta.get("status") == "AVAILABLE"
                       and config_match_reason(meta, model, automatic=True) == ""]
         candidates.sort(key=lambda item: (int(item[1].get("allocation_order", 0) or 0), item[0]))
         if not candidates:
             if any(config_match_reason(meta, model, automatic=True) in
-                   {"MODEL_CONFIG_MISMATCH", "MODEL_MISMATCH"} for _, meta in pool_rows):
+                   {"MODEL_CONFIG_MISMATCH", "MODEL_MISMATCH"} for _, meta in pattern_rows):
                 return None, "MODEL_CONFIG_MISMATCH"
             return None, "PROFILE_POOL_EMPTY"
 
@@ -2875,6 +2954,7 @@ def reserve_project_assignment(client_ip: str, lease: dict, *, row: dict | None 
                             "profile_label": (profile or {}).get("label", ""),
                             "profile_vendor_class": profile_vendor_prefix(profile or {}),
                             "pool_name": selection["pool_name"],
+                            "config_pattern": profile_config_pattern(profile or {}) if profile else "",
                         }
                         devices[key] = result
                         meta.update({"status": "ASSIGNED", "assigned_device": key,
@@ -3074,6 +3154,7 @@ ERROR_MESSAGES = {
     "PROFILE_NOT_MATCHED": "Vendor Profile not matched",
     "AMBIGUOUS_PROFILE": "Multiple Vendor Profiles matched",
     "PROFILE_POOL_EMPTY": "No available config in the selected pool",
+    "PROFILE_PATTERN_EMPTY": "No config in the selected pool matches the profile filename pattern",
     "MODEL_CONFIG_MISMATCH": "Config is not compatible with the detected model",
     "CONFIG_OWNERSHIP_CONFLICT": "Config is assigned to another serial",
     "FETCH_FAILED": "Config download failed",
@@ -3854,6 +3935,7 @@ def index(view=None):
     except ValueError:
         log_limit = 50
     pool = sync_config_pool()
+    profile_mappings = profile_mapping_rows(profiles, pool)
     recent_downloads = list(read_download_records().values())[-200:]
     download_errors = sum(1 for item in recent_downloads if item.get("download_state") in {"FETCH_FAILED", "DOWNLOAD_FAILED", "PARTIAL_FETCH", "PARTIAL_DOWNLOAD"})
     network_messages = network_checks(settings) if is_dhcp_mode(settings) else []
@@ -3861,7 +3943,8 @@ def index(view=None):
     network_warnings = _network_warnings(settings) if is_dhcp_mode(settings) else []
     return render_template("index.html",
         view=view, configs=list_configs(), pool=pool, config_checks=all_config_status(),
-        devices=devices, profiles=profiles, mapping_issues=mapping_issues(devices, profiles), settings=settings,
+        devices=devices, profiles=profiles, profile_mappings=profile_mappings,
+        mapping_issues=mapping_issues(devices, profiles), settings=settings,
         interfaces=network_interfaces() if is_dhcp_mode(settings) else [], network_checks=network_messages,
         network_errors=network_errors, network_warnings=network_warnings,
         pool_errors=validate_dhcp_pool(settings) if is_dhcp_mode(settings) else [],
@@ -4260,15 +4343,13 @@ def delete(hostname):
 
 @app.route("/add_profile", methods=["POST"])
 def add_profile():
-    if operating_mode() != "ZTP_PROVISIONING":
-        flash("Generic Profiles are disabled outside ZTP_PROVISIONING.", "warning")
-        return redirect(url_for("index"))
     prefix = request.form.get("vendor_prefix", request.form.get("vendor_class", "")).strip()
     p = {"label": request.form.get("label", "").strip(),
          "vendor_class": prefix, "vendor_prefix": prefix,
          "device_model": request.form.get("device_model", "").strip(),
          "match_mode": "contains", "config_file": "", "assignment_type": "AUTO",
          "pool_name": request.form.get("pool_name", "").strip(),
+         "config_pattern": request.form.get("config_pattern", "").strip(),
          "compatibility_group": request.form.get("device_model", "").strip(),
          "option60_confirmed": "yes"}
     existing = [r for r in read_profiles()
@@ -4277,7 +4358,7 @@ def add_profile():
     errors = validate_profile_row(p, existing)
     if errors:
         flash("Profile was not saved:\n" + "\n".join(errors), "danger")
-        return redirect(url_for("index"))
+        return redirect(url_for("index", view="settings"))
     if not p["label"]:
         p["label"] = p["vendor_class"]
     rows = [r for r in read_profiles()
@@ -4287,7 +4368,45 @@ def add_profile():
     ok, msg = deploy_dhcpd(generate_dhcpd())
     append_history("PROFILE_UPDATE", operator=operator_name(), new_value=json.dumps(p, ensure_ascii=False))
     flash(f"Profile saved. {msg}", "success" if ok else "warning")
-    return redirect(url_for("index"))
+    return redirect(url_for("index", view="settings"))
+
+
+@app.route("/profiles/<int:idx>/edit", methods=["POST"])
+def edit_profile(idx):
+    """Edit one saved serial-first profile without changing existing assignments."""
+    rows = read_profiles()
+    if not 0 <= idx < len(rows):
+        flash("Vendor Profile was not found.", "danger")
+        return redirect(url_for("index", view="settings"))
+    old = dict(rows[idx])
+    prefix = request.form.get("vendor_prefix", "").strip()
+    updated = {
+        "label": request.form.get("label", "").strip(),
+        "vendor_class": prefix,
+        "vendor_prefix": prefix,
+        "device_model": request.form.get("device_model", "").strip(),
+        "match_mode": "contains",
+        "config_file": "",
+        "assignment_type": "AUTO",
+        "pool_name": request.form.get("pool_name", "").strip(),
+        "config_pattern": request.form.get("config_pattern", "").strip(),
+        "compatibility_group": request.form.get("device_model", "").strip(),
+        "option60_confirmed": "yes",
+    }
+    errors = validate_profile_row(updated, rows[:idx] + rows[idx + 1:])
+    if not updated["label"]:
+        errors.append("Profile Name is required.")
+    if errors:
+        flash("Profile was not updated:\n" + "\n".join(dict.fromkeys(errors)), "danger")
+        return redirect(url_for("index", view="settings"))
+    rows[idx] = updated
+    write_profiles(rows)
+    ok, msg = deploy_dhcpd(generate_dhcpd())
+    append_history("PROFILE_EDIT", operator=operator_name(),
+                   old_value=json.dumps(old, ensure_ascii=False),
+                   new_value=json.dumps(updated, ensure_ascii=False))
+    flash(f"Profile updated. {msg}", "success" if ok else "warning")
+    return redirect(url_for("index", view="settings"))
 
 
 @app.route("/profiles/test-option60", methods=["POST"])
@@ -4303,6 +4422,7 @@ def test_option60():
     return jsonify(ok=True, matched_profile=profile.get("label", ""),
                    detected_model=profile.get("device_model", ""),
                    detected_serial=identity["serial"], selected_pool=profile.get("pool_name", ""),
+                   config_pattern=profile_config_pattern(profile),
                    raw_option60=raw)
 
 
@@ -4315,7 +4435,7 @@ def delete_profile(idx):
                        old_value=json.dumps(removed, ensure_ascii=False))
         ok, msg = deploy_dhcpd(generate_dhcpd())
         flash(f"Profile removed. {msg}", "success" if ok else "warning")
-    return redirect(url_for("index"))
+    return redirect(url_for("index", view="settings"))
 
 
 def _csv_response(rows, fields, fname):
@@ -5035,6 +5155,7 @@ def main():
     port = int(os.environ.get("ZTP_PORT", "8080"))
     migrate_provisioning_state()
     migrate_serial_first_state()
+    migrate_profile_patterns()
     repair_state_consistency()
     if DEV_MODE:
         app.run(host=host, port=port, debug=True)

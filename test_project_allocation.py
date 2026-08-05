@@ -46,9 +46,10 @@ class ProjectAllocationTests(unittest.TestCase):
         app.write_settings(settings)
         app.write_devices([])
         app.write_profiles([{"label": MODEL, "vendor_class": PREFIX, "vendor_prefix": PREFIX,
-                            "device_model": MODEL, "match_mode": "contains", "config_file": "",
-                            "assignment_type": "AUTO", "pool_name": POOL,
-                            "compatibility_group": MODEL, "option60_confirmed": "yes"}])
+                             "device_model": MODEL, "match_mode": "contains", "config_file": "",
+                             "assignment_type": "AUTO", "pool_name": POOL,
+                             "config_pattern": "*",
+                             "compatibility_group": MODEL, "option60_confirmed": "yes"}])
         state = app._default_provisioning_state()
         state["project"].update({"status": "ACTIVE", "expected_devices": 0, "next_sequence": 1})
         app.commit_provisioning_state(state)
