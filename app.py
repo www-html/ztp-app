@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.1]
+ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.2]
 Author: binh.trinh
 
 Matching:
@@ -185,7 +185,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "27.0.1"
+VERSION = "27.0.2"
 
 
 class JsonDataError(RuntimeError):
@@ -3686,6 +3686,13 @@ def provisioning():
     return redirect(url_for("index", view="overview"))
 
 
+@app.route("/api/deployment-status")
+def deployment_status_api():
+    """Return the current device rows for the live Overview display."""
+    rows = deployment_rows()
+    return jsonify({"rows": rows, "metrics": deployment_metrics(rows)})
+
+
 @app.route("/project/status", methods=["POST"])
 def project_status_update():
     ok, message = set_project_status(request.form.get("status", ""), operator=operator_name())
@@ -4853,6 +4860,10 @@ def _record_download_event(parsed: dict) -> dict:
                     assignment.update({"state": "FETCH_FAILED", "status": "ASSIGNED", "last_error": f"HTTP {status_code}"})
                 commit_provisioning_state(provisioning_state)
                 history_event["device_key"] = key
+    # ``device_key`` is already passed positionally.  Remove the copy added to
+    # the event payload so reconciliation cannot fail after committing a
+    # DELIVERED state.
+    history_event.pop("device_key", None)
     append_history(history_event.pop("event_type"), key, **history_event)
     return record
 

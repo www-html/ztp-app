@@ -102,6 +102,39 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
         self.assertEqual(second[-1]["download_state"], "DOWNLOADED")
         self.assertEqual(len(app.read_download_records()), 1)
 
+    def test_ztp_reconciliation_records_delivered_history_without_duplicate_device_key(self):
+        self._settings("ZTP_PROVISIONING")
+        data = b"system { root-authentication { encrypted-password x; } }"
+        app.NGINX_DIR.joinpath("edge.conf").write_bytes(data)
+        state = app.read_provisioning_state()
+        state["project"]["status"] = "ACTIVE"
+        state["devices"]["serial:serial001"] = {
+            "serial": "SERIAL001", "filename": "edge.conf", "current_dhcp_ip": "192.168.250.20",
+            "state": "FETCHING", "status": "ASSIGNED", "assignment_type": "AUTO"}
+        state["configs"]["edge.conf"] = {
+            "status": "ASSIGNED", "assigned_device": "serial:serial001",
+            "assigned_serial": "SERIAL001", "checksum": "test"}
+        app.commit_provisioning_state(state)
+        app.NGINX_ACCESS.write_text(
+            f'192.168.250.20 [02/Aug/2026:12:00:00 +0000] "GET /ztp/config HTTP/1.1" '
+            f'200 {len(data)} 0.01 "req-ztp" "edge.conf" "test" "AUTO" "{len(data)}" "test"\n')
+
+        app.reconcile_downloads()
+
+        delivered = app.read_provisioning_state()["devices"]["serial:serial001"]
+        self.assertEqual(delivered["state"], "DELIVERED")
+        history = app.read_history()
+        self.assertEqual(history[-1]["event_type"], "DELIVERED")
+        self.assertEqual(history[-1]["device_key"], "serial:serial001")
+
+    def test_live_deployment_status_api(self):
+        self._settings("ZTP_PROVISIONING")
+        response = app.app.test_client().get("/api/deployment-status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("rows", payload)
+        self.assertIn("metrics", payload)
+
     def test_protected_update_and_unchanged_upload(self):
         self._settings()
         data = b"system { root-authentication { encrypted-password x; } }"
