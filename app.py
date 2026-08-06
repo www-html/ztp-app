@@ -296,7 +296,8 @@ def _require_auth():
     /configs/* and /ztp/config remain public because Junos devices cannot authenticate
     while bootstrapping. Auth is skipped under ZTP_DEV=1 for local tests.
     """
-    if (DEV_MODE or request.path.startswith("/configs/") or
+    if (DEV_MODE or request.path.startswith("/static/") or
+            request.path.startswith("/configs/") or
             request.path.startswith("/ztp/config/") or
             request.path in {"/ztp/config", "/login"}):
         return None

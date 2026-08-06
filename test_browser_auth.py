@@ -27,6 +27,14 @@ class BrowserAuthTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login?next=", response.headers["Location"])
 
+    def test_static_assets_are_available_before_login(self):
+        response = self.client.get("/static/favicon.svg")
+        try:
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("image/svg+xml", response.content_type)
+        finally:
+            response.close()
+
     def test_login_creates_session_and_logout_clears_it(self):
         response = self.client.post("/login", data={
             "username": "operator", "password": "correct-password",
