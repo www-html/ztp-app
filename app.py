@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v28.0.0]
+ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v28.1.0]
 Author: binh.trinh
 
 Matching:
@@ -186,7 +186,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "28.0.0"
+VERSION = "28.1.0"
 
 
 class JsonDataError(RuntimeError):
@@ -2245,16 +2245,6 @@ def project_validation_errors(state: dict | None = None) -> list[str]:
     for filename, keys in by_file.items():
         if len(keys) > 1:
             errors.append(f"Config has multiple owners: {filename}.")
-    expected = max(0, int(state.get("project", {}).get("expected_devices", 0) or 0))
-    try:
-        settings = read_settings()
-        pool_size = int(ipaddress.IPv4Address(settings["range_high"])) - int(ipaddress.IPv4Address(settings["range_low"])) + 1
-        if expected and pool_size < expected:
-            errors.append(f"DHCP pool has {pool_size} addresses but project expects {expected} devices.")
-    except (KeyError, ValueError, ipaddress.AddressValueError):
-        errors.append("DHCP pool capacity cannot be validated.")
-    if expected and available + owned < expected:
-        errors.append(f"Only {available + owned} allocatable/owned configs for {expected} expected devices.")
     if operating_mode() != "ZTP_PROVISIONING":
         errors.append("Operating mode must be ZTP_PROVISIONING; direct /configs/ browsing will then be blocked.")
     return list(dict.fromkeys(errors))
@@ -3254,13 +3244,33 @@ def _filter_deployment_rows(rows: list[dict]) -> list[dict]:
 
 def deployment_metrics(rows: list[dict] | None = None) -> dict:
     rows = deployment_rows() if rows is None else rows
-    expected = max(0, _safe_int(read_settings(), "project_expected_devices", 0))
+    configs = read_provisioning_state().get("configs", {})
+    capacity = len(configs)
+    remaining = sum(1 for item in configs.values() if item.get("status") == "AVAILABLE")
     observed = len({row["serial"].lower() for row in rows if row.get("serial")})
-    return {"expected": expected, "observed": observed,
+    return {"capacity": capacity, "observed": observed,
             "completed": sum(1 for row in rows if row["result"] == "Completed"),
             "in_progress": sum(1 for row in rows if row["result"] == "In Progress"),
             "error": sum(1 for row in rows if row["result"] == "Error"),
-            "remaining": max(0, expected - observed)}
+            "remaining": remaining}
+
+
+def paginate_rows(rows: list, page_param: str, size_param: str, default_size: int = 25) -> tuple[list, dict]:
+    """Return one bounded page and stable metadata for server-rendered tables."""
+    try:
+        page = max(1, int(request.args.get(page_param, "1") or 1))
+        per_page = max(10, min(100, int(request.args.get(size_param, str(default_size)) or default_size)))
+    except (RuntimeError, ValueError):
+        page, per_page = 1, default_size
+    total = len(rows)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, pages)
+    start = (page - 1) * per_page
+    return rows[start:start + per_page], {
+        "page": page, "pages": pages, "per_page": per_page, "total": total,
+        "start": 0 if total == 0 else start + 1, "end": min(start + per_page, total),
+        "has_prev": page > 1, "has_next": page < pages,
+    }
 
 
 def simplified_log_rows(limit: int = 50) -> list[dict]:
@@ -3697,7 +3707,8 @@ def provisioning():
 def deployment_status_api():
     """Return the current device rows for the live Overview display."""
     all_rows = deployment_rows(apply_filters=False)
-    return jsonify({"rows": _filter_deployment_rows(all_rows),
+    visible, pagination = paginate_rows(_filter_deployment_rows(all_rows), "device_page", "device_page_size")
+    return jsonify({"rows": visible, "pagination": pagination,
                     "metrics": deployment_metrics(all_rows)})
 
 
@@ -3941,16 +3952,15 @@ def index(view=None):
     provisioning = provisioning_summary()
     client_rows = unified_client_rows()
     deployment_all = deployment_rows(apply_filters=False) if operating_mode(settings) == "ZTP_PROVISIONING" else []
-    deployment_status = _filter_deployment_rows(deployment_all)
+    deployment_status, device_pagination = paginate_rows(
+        _filter_deployment_rows(deployment_all), "device_page", "device_page_size")
     metrics = deployment_metrics(deployment_all) if operating_mode(settings) == "ZTP_PROVISIONING" else {
-        "expected": _safe_int(settings, "project_expected_devices", 0), "observed": 0,
-        "completed": 0, "in_progress": 0, "error": 0,
-        "remaining": _safe_int(settings, "project_expected_devices", 0)}
-    try:
-        log_limit = int(request.args.get("log_limit", "50") or 50)
-    except ValueError:
-        log_limit = 50
+        "capacity": 0, "observed": 0, "completed": 0, "in_progress": 0,
+        "error": 0, "remaining": 0}
     pool = sync_config_pool()
+    pool_page, config_pagination = paginate_rows(pool, "config_page", "config_page_size")
+    log_rows, log_pagination = paginate_rows(
+        list(reversed(simplified_log_rows(100000))), "log_page", "log_page_size")
     profile_mappings = profile_mapping_rows(profiles, pool)
     recent_downloads = list(read_download_records().values())[-200:]
     download_errors = sum(1 for item in recent_downloads if item.get("download_state") in {"FETCH_FAILED", "DOWNLOAD_FAILED", "PARTIAL_FETCH", "PARTIAL_DOWNLOAD"})
@@ -3958,7 +3968,7 @@ def index(view=None):
     network_errors = _network_errors(settings) if is_dhcp_mode(settings) else []
     network_warnings = _network_warnings(settings) if is_dhcp_mode(settings) else []
     return render_template("index.html",
-        view=view, configs=list_configs(), pool=pool, config_checks=all_config_status(),
+        view=view, configs=list_configs(), pool=pool_page, config_checks=all_config_status(),
         devices=devices, profiles=profiles, profile_mappings=profile_mappings,
         mapping_issues=mapping_issues(devices, profiles), settings=settings,
         interfaces=network_interfaces() if is_dhcp_mode(settings) else [], network_checks=network_messages,
@@ -3966,13 +3976,15 @@ def index(view=None):
         pool_errors=validate_dhcp_pool(settings) if is_dhcp_mode(settings) else [],
         pool_suggestion=dhcp_pool_suggestion(settings),
         pool_prefix_length=netmask_prefix_length(settings.get("netmask", "")),
+        ztp_network=f"{settings.get('subnet', '')}/{netmask_prefix_length(settings.get('netmask', ''))}",
         provisioning=provisioning, client_rows=client_rows, mode=operating_mode(settings),
         deployment_status=deployment_status, deployment_metrics=metrics,
+        device_pagination=device_pagination, config_pagination=config_pagination,
         pending_mode=pending_mode(settings), service_status=service_status(),
         active_leases=len(parse_leases()) if is_dhcp_mode(settings) else 0,
         download_errors=download_errors, recent_downloads=recent_downloads,
         recent_history=read_history(200),
-        simple_logs=simplified_log_rows(log_limit), log_limit=log_limit,
+        simple_logs=log_rows, log_pagination=log_pagination,
         device_runtime=read_device_runtime(), option60_log=dhcp_option60_lines(),
         mapping_import_candidate=_read_object_store(MAPPING_IMPORT_CANDIDATE, {}),
         dhcp_log="\n".join(LOG_SOURCES["dhcp"]()) if is_dhcp_mode(settings) else "",
@@ -4046,8 +4058,17 @@ def settings_save():
         value = request.form.get(key, "").strip()
         if value or key in clearable:
             s[key] = value
+    cidr = request.form.get("ztp_network", "").strip()
     prefix = request.form.get("prefix_length", "").strip()
-    if prefix:
+    if cidr:
+        try:
+            network = ipaddress.IPv4Network(cidr, strict=False)
+            s["subnet"] = str(network.network_address)
+            s["netmask"] = str(network.netmask)
+        except (ValueError, ipaddress.AddressValueError) as exc:
+            flash(f"DHCP network is not valid: {exc}", "danger")
+            return redirect(url_for("index", view="network"))
+    elif prefix:
         try:
             s["netmask"] = prefix_length_netmask(prefix)
         except ValueError as exc:
@@ -4748,9 +4769,9 @@ def export_deployment_report(fmt):
     summary.title = "Summary"
     metrics = deployment_metrics(rows)
     summary.append(["Metric", "Value"])
-    for label, key in (("Expected", "expected"), ("Observed", "observed"),
+    for label, key in (("Config Capacity", "capacity"), ("Observed", "observed"),
                        ("Completed", "completed"), ("In Progress", "in_progress"),
-                       ("Error", "error"), ("Remaining", "remaining")):
+                       ("Error", "error"), ("Configs Available", "remaining")):
         summary.append([label, metrics[key]])
     summary.append([])
     summary.append(["Model", "Observed", "Completed", "In Progress", "Error"])

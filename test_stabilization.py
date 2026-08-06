@@ -179,6 +179,30 @@ class StabilizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(app.read_settings()["gateway"], "")
 
+    def test_network_cidr_updates_subnet_and_netmask(self):
+        self.settings()
+        response = app.app.test_client().post("/settings", data={
+            "gateway": "", "server_ip": "192.168.250.1", "ztp_network": "192.168.250.0/24",
+            "range_low": "192.168.250.10", "range_high": "192.168.250.200",
+            "internet_interface": "", "ztp_interface": "", "confirm_dhcp": "yes",
+            "save_mode": "draft"})
+        self.assertEqual(response.status_code, 302)
+        saved = app.read_settings()
+        self.assertEqual(saved["subnet"], "192.168.250.0")
+        self.assertEqual(saved["netmask"], "255.255.255.0")
+
+    def test_large_tables_are_paginated_and_ui_is_compact(self):
+        self.settings()
+        with app.app.test_request_context("/?view=logs&log_page=2"):
+            page, meta = app.paginate_rows(list(range(61)), "log_page", "log_page_size")
+        self.assertEqual(page, list(range(25, 50)))
+        self.assertEqual((meta["page"], meta["pages"], meta["total"]), (2, 3, 61))
+        html = app.app.test_client().get("/?view=network").get_data(as_text=True)
+        self.assertIn('name="ztp_network"', html)
+        self.assertIn("192.168.250.0/24", html)
+        self.assertIn("favicon.svg", html)
+        self.assertNotIn("Serial-first provisioning", html)
+
     def test_legacy_nginx_dash_bytes_are_safe(self):
         parsed = app._parse_nginx_line('192.168.250.20 [02/Aug/2026:12:00:00 +0000] "GET /configs/edge.conf HTTP/1.1" 304 0 0.01 "req-304" "edge.conf" "" "AUTO" "-" "test"')
         self.assertIsNotNone(parsed)
