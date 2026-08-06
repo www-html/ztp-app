@@ -311,19 +311,21 @@ class SerialFirstWorkflowTests(unittest.TestCase):
         self.assertTrue((app.NGINX_DIR / "one.conf").exists())
 
     def test_ui_is_serial_first_without_verify_or_mac_matching(self):
-        response = app.app.test_client().get("/?view=settings")
+        response = app.app.test_client().get("/?view=mappings")
         text = response.get_data(as_text=True)
         self.assertIn("Device Override", text)
         self.assertIn("Test Option 60", text)
         self.assertNotIn("By MAC", text)
         self.assertNotIn(">Verify<", text)
+        settings = app.app.test_client().get("/?view=settings").get_data(as_text=True)
+        self.assertNotIn("Test Option 60", settings)
 
     def test_ui_shows_mapping_pattern_inventory_and_edit_action(self):
         self.add_profile(pattern="OXISANTA_EX4100_PC*")
         self.add_config("OXISANTA_EX4100_PC001.conf.txt")
-        response = app.app.test_client().get("/?view=settings")
+        response = app.app.test_client().get("/?view=mappings")
         text = response.get_data(as_text=True)
-        self.assertIn("Saved Vendor Profile Mappings", text)
+        self.assertIn("Saved Vendor Mappings", text)
         self.assertIn("OXISANTA_EX4100_PC*", text)
         self.assertIn("1 matched", text)
         self.assertIn('/profiles/0/edit', text)
