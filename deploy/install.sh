@@ -65,8 +65,11 @@ echo "==> [5/6] systemd unit (waitress on :8080)"
 sed -i "s/^Environment=ZTP_MODE=.*/Environment=ZTP_MODE=$ZTP_MODE/" "$APP_DST/deploy/ztp-app.service"
 grep -q '^Environment=ZTP_DATA_DIR=' "$APP_DST/deploy/ztp-app.service" || sed -i "/Environment=ZTP_WEBROOT=/a Environment=ZTP_DATA_DIR=/var/lib/ztp-app" "$APP_DST/deploy/ztp-app.service"
 install -m 0644 "$APP_DST/deploy/ztp-app.service" /etc/systemd/system/ztp-app.service
+install -m 0644 "$APP_DST/deploy/ztp-reconcile.service" /etc/systemd/system/ztp-reconcile.service
+install -m 0644 "$APP_DST/deploy/ztp-reconcile.timer" /etc/systemd/system/ztp-reconcile.timer
 systemctl daemon-reload
 systemctl enable --now ztp-app.service
+systemctl enable --now ztp-reconcile.timer
 
 echo "==> [6/6] Validate + start services"
 if [ "$ZTP_MODE" != "FILE_SERVER_ONLY" ] && [ "${APPLY_DHCP_ON_INSTALL:-0}" = "1" ]; then

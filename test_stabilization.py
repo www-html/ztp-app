@@ -113,15 +113,25 @@ class StabilizationTests(unittest.TestCase):
         self.assertEqual(client.get("/bindings").status_code, 404)
         self.assertEqual(client.post("/provisioning/verify/mac:x").status_code, 302)
 
-    def test_overview_has_exactly_four_primary_menu_items(self):
+    def test_overview_has_horizontal_workflow_navigation(self):
         self.settings()
         html = app.app.test_client().get("/?view=overview").get_data(as_text=True)
-        for label in ("Overview", "Config Inventory", "Logs", "Settings"):
+        for label in ("Overview", "Network", "Configurations", "Mappings", "Logs", "Settings"):
             self.assertIn(label, html)
-        self.assertIn("Operating Mode", html)
+        self.assertIn("Deployment workflow", html)
         self.assertIn("Deployment Status", html)
         self.assertNotIn("Health", html)
         self.assertNotIn("SSH credentials", html)
+
+    def test_each_workflow_view_renders(self):
+        self.settings()
+        client = app.app.test_client()
+        for view, heading in (("network", "Network"), ("configs", "Configurations"),
+                              ("mappings", "Mappings"), ("logs", "Logs"),
+                              ("settings", "Settings")):
+            response = client.get(f"/?view={view}")
+            self.assertEqual(response.status_code, 200, view)
+            self.assertIn(f"<h1>{heading}</h1>", response.get_data(as_text=True), view)
 
     def test_config_pool_quarantined_cannot_be_overwritten(self):
         self.config()

@@ -1,7 +1,8 @@
-# ztp-app v27.0.3
+# ztp-app v28.0.0
 
-v27.0.3 preserves open device details during live refresh, keeps deployment metrics
-independent from table filters, and classifies stalled or partial fetches as errors.
+v28.0.0 adds a horizontal workflow UI, browser-local display times, guided Network /
+Configurations / Mappings screens, safe CSV Serial-to-Config import, and independent
+systemd delivery reconciliation.
 
 Serial-first Juniper ZTP operations console using Flask, Nginx and ISC DHCP on an isolated Layer-2 deployment network.
 

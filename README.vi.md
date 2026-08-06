@@ -1,7 +1,7 @@
-# ztp-app v27.0.3 — hướng dẫn vận hành
+# ztp-app v28.0.0 — hướng dẫn vận hành
 
-v27.0.3 giữ nguyên View Details khi refresh, không để filter làm thay đổi tổng số
-Observed/Remaining, và chuyển fetch quá hạn hoặc thiếu bytes sang Error.
+v28.0.0 bổ sung navigation ngang, hướng dẫn workflow, thời gian theo trình duyệt,
+import CSV Serial-to-Config có preview và bộ reconcile trạng thái chạy độc lập.
 
 `ztp-app` là công cụ Juniper ZTP theo Serial Number, chạy bằng Flask, Nginx và ISC DHCP trên một mạng Layer-2 ZTP cô lập.
 
@@ -234,4 +234,4 @@ pip install -r requirements.txt
 ZTP_DEV=1 python -m unittest -v
 ```
 
-Version hiện tại: **27.0.3**.
+Version hiện tại: **28.0.0**.

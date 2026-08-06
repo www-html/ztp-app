@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("ZTP_DEV", "1")
 import app
@@ -19,7 +20,7 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
             "PROFILES_JSON", "SETTINGS_JSON", "CREDS_JSON", "PROVISIONING_STATE_JSON", "CONFIG_POOL_JSON", "ASSIGNMENTS_JSON",
             "RESULTS_JSON", "HISTORY_JSONL", "DEVICE_RUNTIME_JSON", "DOWNLOAD_RECORDS_JSON",
             "PARSER_CURSORS_JSON", "ALLOCATION_LOCK", "HISTORY_LOCK", "LEASES_FILE", "SYSLOG_FILE",
-            "NGINX_ACCESS", "DEV_MODE")}
+            "NGINX_ACCESS", "MAPPING_IMPORT_CANDIDATE", "DEV_MODE")}
         app.DATA_DIR = root / "state"; app.DATA_DIR.mkdir()
         app.NGINX_DIR = root / "configs"; app.NGINX_DIR.mkdir()
         app.UPLOAD_DIR = root / "uploads"; app.UPLOAD_DIR.mkdir()
@@ -32,6 +33,7 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
         app.LEASES_FILE = root / "dhcpd.leases"
         app.SYSLOG_FILE = root / "syslog"
         app.NGINX_ACCESS = root / "ztp-access.log"
+        app.MAPPING_IMPORT_CANDIDATE = app.DATA_DIR / "mapping_import_candidate.json"
         app.DEV_MODE = True
 
     def tearDown(self):
@@ -147,6 +149,35 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
         self.assertEqual(app.ui_result("ASSIGNED_NO_FETCH"), "Error")
         self.assertEqual(app.ui_result("PARTIAL_FETCH"), "Error")
         self.assertEqual(app.ui_result("FETCHING"), "In Progress")
+
+    def test_serial_mapping_csv_requires_clean_preview_before_atomic_apply(self):
+        self._settings("ZTP_PROVISIONING")
+        config = b"system { root-authentication { encrypted-password x; } }"
+        app.upload_config_bytes("edge.conf", config)
+        state = app.read_provisioning_state()
+        state["configs"]["edge.conf"].update({"device_model": "EX4100-H-12MP", "allow_any_model": False})
+        app.commit_provisioning_state(state)
+        client = app.app.test_client()
+        bad = client.post("/mappings/import/preview", data={"mapping_file": (
+            io.BytesIO(b"Serial Number,Expected Model,Config File\nSERIAL001,EX4100-H-12MP,missing.conf\n"),
+            "mapping.csv")}, content_type="multipart/form-data")
+        self.assertEqual(bad.status_code, 302)
+        self.assertTrue(app.read_devices() == [])
+        blocked = client.post("/mappings/import/apply", data={"confirm": "APPLY"})
+        self.assertEqual(blocked.status_code, 302)
+        self.assertTrue(app.read_devices() == [])
+
+        client.post("/mappings/import/preview", data={"mapping_file": (
+            io.BytesIO(b"Serial Number,Expected Model,Config File\nSERIAL001,EX4100-H-12MP,edge.conf\n"),
+            "mapping.csv")}, content_type="multipart/form-data")
+        candidate = app._read_object_store(app.MAPPING_IMPORT_CANDIDATE, {})
+        self.assertFalse(candidate.get("errors"), candidate)
+        self.assertFalse(candidate["rows"][0]["errors"], candidate)
+        with patch.object(app, "deploy_dhcpd", return_value=(True, "ok")):
+            applied = client.post("/mappings/import/apply", data={"confirm": "APPLY"})
+        self.assertEqual(applied.status_code, 302)
+        self.assertEqual(app.read_devices()[0]["serial_number"], "SERIAL001")
+        self.assertEqual(app.read_devices()[0]["specific_config_file"], "edge.conf")
 
     def test_protected_update_and_unchanged_upload(self):
         self._settings()

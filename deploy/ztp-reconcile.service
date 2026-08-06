@@ -1,0 +1,12 @@
+[Unit]
+Description=Reconcile ZTP delivery state from Nginx logs
+After=ztp-app.service nginx.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ztp-app
+Environment=ZTP_DATA_DIR=/var/lib/ztp-app
+Environment=ZTP_WEBROOT=/var/www/html/configs
+Environment=ZTP_NGINX_ACCESS=/var/log/nginx/ztp-access.log
+Environment=ZTP_RECONCILE_ONCE=1
+ExecStart=/opt/ztp-app/.venv/bin/python /opt/ztp-app/app.py

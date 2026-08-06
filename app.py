@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.3]
+ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v28.0.0]
 Author: binh.trinh
 
 Matching:
@@ -66,6 +66,7 @@ RESULTS_JSON = Path(os.environ.get("ZTP_RESULTS", str(DATA_DIR / "results.json")
 HISTORY_JSONL = Path(os.environ.get("ZTP_HISTORY", str(DATA_DIR / "history.jsonl")))
 DEVICE_RUNTIME_JSON = Path(os.environ.get("ZTP_DEVICE_RUNTIME", str(DATA_DIR / "device_runtime.json")))
 DOWNLOAD_RECORDS_JSON = Path(os.environ.get("ZTP_DOWNLOAD_RECORDS", str(DATA_DIR / "download_records.json")))
+MAPPING_IMPORT_CANDIDATE = Path(os.environ.get("ZTP_MAPPING_IMPORT_CANDIDATE", str(DATA_DIR / "mapping_import_candidate.json")))
 PARSER_CURSORS_JSON = Path(os.environ.get("ZTP_PARSER_CURSORS", str(DATA_DIR / "parser_cursors.json")))
 MIGRATION_MARKER = Path(os.environ.get("ZTP_MIGRATION_MARKER", str(DATA_DIR / "migration.json")))
 ALLOCATION_LOCK = Path(os.environ.get("ZTP_ALLOCATION_LOCK", str(DATA_DIR / ".allocation.lock")))
@@ -185,7 +186,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "27.0.3"
+VERSION = "28.0.0"
 
 
 class JsonDataError(RuntimeError):
@@ -3183,7 +3184,8 @@ def friendly_event_message(code: str, fallback: str = "") -> str:
 
 def deployment_rows(*, apply_filters: bool = True) -> list[dict]:
     """Return the serial-first Deployment Status rows used by UI and reports."""
-    reconcile_downloads()
+    if DEV_MODE:
+        reconcile_downloads()
     state = read_provisioning_state()
     rows = {}
     for key, item in state["devices"].items():
@@ -3748,7 +3750,7 @@ def provisioning_mode():
         mode = "ZTP_PROVISIONING"
     if mode not in OPERATING_MODES:
         flash("Choose ZTP_PROVISIONING, DHCP_FILE_SERVER or FILE_SERVER_ONLY.", "danger")
-        return redirect(url_for("index", view="settings"))
+        return redirect(url_for("index", view="mappings"))
     settings = read_settings(); old = operating_mode(settings)
     if mode == old:
         flash(f"Mode is already {mode}.", "info")
@@ -3759,7 +3761,7 @@ def provisioning_mode():
                                         confirm=request.form.get("confirm_mode") == "yes",
                                         apply=apply_requested)
     flash(message, "success" if ok else "warning")
-    return redirect(url_for("index", view="settings"))
+    return redirect(url_for("index", view="mappings"))
 
 
 @app.route("/provisioning/config", methods=["POST"])
@@ -3932,7 +3934,7 @@ def provisioning_timeline(provision_key):
 def index(view=None):
     settings = read_settings()
     view = view or request.args.get("view", "overview")
-    if view not in {"overview", "configs", "logs", "settings"}:
+    if view not in {"overview", "network", "configs", "mappings", "logs", "settings"}:
         view = "overview"
     devices = read_devices()
     profiles = read_profiles()
@@ -3972,6 +3974,7 @@ def index(view=None):
         recent_history=read_history(200),
         simple_logs=simplified_log_rows(log_limit), log_limit=log_limit,
         device_runtime=read_device_runtime(), option60_log=dhcp_option60_lines(),
+        mapping_import_candidate=_read_object_store(MAPPING_IMPORT_CANDIDATE, {}),
         dhcp_log="\n".join(LOG_SOURCES["dhcp"]()) if is_dhcp_mode(settings) else "",
         nginx_log="\n".join(LOG_SOURCES["nginx"]()),
         match_methods=MATCH_METHODS, dev_mode=DEV_MODE,
@@ -4331,6 +4334,117 @@ def deploy():
     return redirect(url_for("index"))
 
 
+def _mapping_import_rows(file_storage) -> tuple[list[dict], list[str]]:
+    """Parse and validate a Serial-to-Config CSV without changing runtime data."""
+    errors, parsed = [], []
+    try:
+        text = file_storage.read().decode("utf-8-sig")
+    except (AttributeError, UnicodeDecodeError):
+        return [], ["CSV must use UTF-8 encoding."]
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        return [], ["CSV header is missing."]
+    normalized = {str(name).strip().lower().replace("_", " "): name for name in reader.fieldnames}
+    serial_col = normalized.get("serial number") or normalized.get("serial")
+    model_col = normalized.get("expected model") or normalized.get("model")
+    config_col = normalized.get("config file") or normalized.get("config")
+    if not all((serial_col, model_col, config_col)):
+        return [], ["Required columns: Serial Number, Expected Model, Config File."]
+    existing = read_devices()
+    imported_serials, available_files = set(), set(list_configs())
+    base = [row for row in existing]
+    for line_no, source in enumerate(reader, 2):
+        serial = str(source.get(serial_col) or "").strip()
+        model = str(source.get(model_col) or "").strip()
+        filename = os.path.basename(str(source.get(config_col) or "").strip())
+        row = {"match_method": "serial", "serial_number": serial, "mac_address": "",
+               "device_type": model, "expected_model": model, "hostname": serial,
+               "ip_address": "", "mgmt_ip": "", "client_id": "", "compatibility_group": "",
+               "specific_config_file": filename, "assignment_type": "STATIC", "pool_name": "",
+               "option60_confirmed": "yes"}
+        row_errors = []
+        if serial.lower() in imported_serials:
+            row_errors.append("duplicate Serial Number in CSV")
+        if filename not in available_files:
+            row_errors.append("Config File does not exist")
+        current_assignment = read_assignments().get(device_key(serial=serial), {}) if serial else {}
+        current_file = str(current_assignment.get("filename") or "")
+        if current_file and current_file != filename:
+            row_errors.append(f"serial already owns {current_file}; release it before import")
+        comparison = [item for item in base if str(item.get("serial_number") or "").lower() != serial.lower()]
+        row_errors.extend(validate_device_row(row, comparison))
+        parsed.append({"line": line_no, "row": row, "errors": list(dict.fromkeys(row_errors))})
+        imported_serials.add(serial.lower())
+        if not row_errors:
+            base = comparison + [row]
+    if not parsed:
+        errors.append("CSV contains no mapping rows.")
+    return parsed, errors
+
+
+@app.route("/mappings/import/preview", methods=["POST"])
+def mapping_import_preview():
+    upload = request.files.get("mapping_file")
+    if not upload or not upload.filename.lower().endswith(".csv"):
+        flash("Select a CSV mapping file.", "danger")
+        return redirect(url_for("index", view="mappings"))
+    rows, errors = _mapping_import_rows(upload)
+    candidate = {"created_at": _now_iso(), "rows": rows, "errors": errors,
+                 "filename": os.path.basename(upload.filename)}
+    _atomic_write_json(MAPPING_IMPORT_CANDIDATE, candidate)
+    flash("Import preview created. Review every error before applying.", "warning" if errors or any(r["errors"] for r in rows) else "success")
+    return redirect(url_for("index", view="mappings", import_preview="1"))
+
+
+@app.route("/mappings/import/template.csv")
+def mapping_import_template():
+    return Response("Serial Number,Expected Model,Config File\nGE4825AW0161,EX4100-H-12MP,OXISANTA_EX4100_PC001.conf.txt\n",
+                    mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=serial-config-mapping-template.csv"})
+
+
+@app.route("/mappings/import/apply", methods=["POST"])
+def mapping_import_apply():
+    if request.form.get("confirm") != "APPLY":
+        flash("Type APPLY to confirm the validated mapping import.", "danger")
+        return redirect(url_for("index", view="mappings", import_preview="1"))
+    candidate = _read_object_store(MAPPING_IMPORT_CANDIDATE, {})
+    rows = candidate.get("rows", []) if isinstance(candidate, dict) else []
+    if not rows or candidate.get("errors") or any(item.get("errors") for item in rows):
+        flash("Import is blocked until the preview has no errors.", "danger")
+        return redirect(url_for("index", view="mappings", import_preview="1"))
+    old_rows = read_devices()
+    imported = {item["row"]["serial_number"].lower(): item["row"] for item in rows}
+    merged = [row for row in old_rows if str(row.get("serial_number") or "").lower() not in imported]
+    live_errors = []
+    for row in imported.values():
+        serial = row["serial_number"]
+        assignment = read_assignments().get(device_key(serial=serial), {})
+        owned = str(assignment.get("filename") or "")
+        if owned and owned != row["specific_config_file"]:
+            live_errors.append(f"{serial} already owns {owned}")
+        row_errors = validate_device_row(row, merged)
+        if row_errors:
+            live_errors.extend(f"{serial}: {error}" for error in row_errors)
+        else:
+            merged.append(row)
+    if live_errors:
+        flash("Import changed after preview and was blocked:\n" + "\n".join(live_errors), "danger")
+        return redirect(url_for("index", view="mappings", import_preview="1"))
+    try:
+        write_devices(merged)
+        ok, message = deploy_dhcpd(generate_dhcpd())
+        if not ok:
+            raise RuntimeError(message)
+    except (OSError, JsonDataError, RuntimeError) as exc:
+        write_devices(old_rows)
+        flash(f"Import failed; previous mappings restored: {exc}", "danger")
+        return redirect(url_for("index", view="mappings", import_preview="1"))
+    append_history("MAPPING_IMPORT", operator=operator_name(), new_value=str(len(imported)))
+    MAPPING_IMPORT_CANDIDATE.unlink(missing_ok=True)
+    flash(f"Imported {len(imported)} Serial-to-Config mappings.", "success")
+    return redirect(url_for("index", view="mappings"))
+
+
 @app.route("/delete/<hostname>", methods=["POST"])
 def delete(hostname):
     rows = read_devices()
@@ -4358,11 +4472,12 @@ def delete(hostname):
 @app.route("/add_profile", methods=["POST"])
 def add_profile():
     prefix = request.form.get("vendor_prefix", request.form.get("vendor_class", "")).strip()
-    p = {"label": request.form.get("label", "").strip(),
+    label = request.form.get("label", "").strip() or request.form.get("device_model", "").strip() or prefix
+    p = {"label": label,
          "vendor_class": prefix, "vendor_prefix": prefix,
          "device_model": request.form.get("device_model", "").strip(),
          "match_mode": "contains", "config_file": "", "assignment_type": "AUTO",
-         "pool_name": request.form.get("pool_name", "").strip(),
+         "pool_name": request.form.get("pool_name", "").strip() or re.sub(r"[^A-Za-z0-9_-]+", "_", label).upper(),
          "config_pattern": request.form.get("config_pattern", "").strip(),
          "compatibility_group": request.form.get("device_model", "").strip(),
          "option60_confirmed": "yes"}
@@ -4372,7 +4487,7 @@ def add_profile():
     errors = validate_profile_row(p, existing)
     if errors:
         flash("Profile was not saved:\n" + "\n".join(errors), "danger")
-        return redirect(url_for("index", view="settings"))
+        return redirect(url_for("index", view="mappings"))
     if not p["label"]:
         p["label"] = p["vendor_class"]
     rows = [r for r in read_profiles()
@@ -4382,7 +4497,7 @@ def add_profile():
     ok, msg = deploy_dhcpd(generate_dhcpd())
     append_history("PROFILE_UPDATE", operator=operator_name(), new_value=json.dumps(p, ensure_ascii=False))
     flash(f"Profile saved. {msg}", "success" if ok else "warning")
-    return redirect(url_for("index", view="settings"))
+    return redirect(url_for("index", view="mappings"))
 
 
 @app.route("/profiles/<int:idx>/edit", methods=["POST"])
@@ -4391,7 +4506,7 @@ def edit_profile(idx):
     rows = read_profiles()
     if not 0 <= idx < len(rows):
         flash("Vendor Profile was not found.", "danger")
-        return redirect(url_for("index", view="settings"))
+        return redirect(url_for("index", view="mappings"))
     old = dict(rows[idx])
     prefix = request.form.get("vendor_prefix", "").strip()
     updated = {
@@ -4402,7 +4517,7 @@ def edit_profile(idx):
         "match_mode": "contains",
         "config_file": "",
         "assignment_type": "AUTO",
-        "pool_name": request.form.get("pool_name", "").strip(),
+        "pool_name": request.form.get("pool_name", "").strip() or old.get("pool_name", ""),
         "config_pattern": request.form.get("config_pattern", "").strip(),
         "compatibility_group": request.form.get("device_model", "").strip(),
         "option60_confirmed": "yes",
@@ -4412,7 +4527,7 @@ def edit_profile(idx):
         errors.append("Profile Name is required.")
     if errors:
         flash("Profile was not updated:\n" + "\n".join(dict.fromkeys(errors)), "danger")
-        return redirect(url_for("index", view="settings"))
+        return redirect(url_for("index", view="mappings"))
     rows[idx] = updated
     write_profiles(rows)
     ok, msg = deploy_dhcpd(generate_dhcpd())
@@ -4420,7 +4535,7 @@ def edit_profile(idx):
                    old_value=json.dumps(old, ensure_ascii=False),
                    new_value=json.dumps(updated, ensure_ascii=False))
     flash(f"Profile updated. {msg}", "success" if ok else "warning")
-    return redirect(url_for("index", view="settings"))
+    return redirect(url_for("index", view="mappings"))
 
 
 @app.route("/profiles/test-option60", methods=["POST"])
@@ -4881,7 +4996,12 @@ def reconcile_downloads() -> list[dict]:
     for line in _incremental_lines(NGINX_ACCESS, "nginx"):
         parsed = _parse_nginx_line(line)
         if parsed:
-            _record_download_event(parsed)
+            try:
+                _record_download_event(parsed)
+            except (OSError, JsonDataError, ValueError, TypeError) as exc:
+                # One malformed record must never prevent later device
+                # deliveries from being reconciled by the timer.
+                append_history("RECONCILE_ERROR", operator="system", message=str(exc)[:300])
     return list(read_download_records().values())[-200:]
 
 
@@ -5169,6 +5289,11 @@ def serve_config(fname):
 
 
 def main():
+    if os.environ.get("ZTP_RECONCILE_ONCE", "0") == "1":
+        migrate_provisioning_state()
+        reconcile_downloads()
+        refresh_runtime_states()
+        return
     host = os.environ.get("ZTP_HOST", "0.0.0.0")
     port = int(os.environ.get("ZTP_PORT", "8080"))
     migrate_provisioning_state()

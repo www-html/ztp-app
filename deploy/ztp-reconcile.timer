@@ -1,0 +1,11 @@
+[Unit]
+Description=Update ZTP delivery status every 10 seconds
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Unit=ztp-reconcile.service
+
+[Install]
+WantedBy=timers.target
