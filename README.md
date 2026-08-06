@@ -1,6 +1,6 @@
-# ztp-app v28.1.0
+# ztp-app v28.1.1
 
-v28.1.0 adds compact browser-local times, CIDR network input, table pagination,
+v28.1.1 fixes the Mappings hierarchy and nested-form overflow. v28.1.0 added compact browser-local times, CIDR network input, table pagination,
 favicon restoration and a denser guided workflow UI. v28.0.0 added a horizontal workflow UI, browser-local display times, guided Network /
 Configurations / Mappings screens, safe CSV Serial-to-Config import, and independent
 systemd delivery reconciliation.

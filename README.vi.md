@@ -1,6 +1,6 @@
-# ztp-app v28.1.0 — hướng dẫn vận hành
+# ztp-app v28.1.1 — hướng dẫn vận hành
 
-v28.1.0 bổ sung thời gian browser dạng ngắn, nhập network bằng CIDR, pagination,
+v28.1.1 sửa phân cấp trang Mappings và lỗi form tràn khỏi card. v28.1.0 bổ sung thời gian browser dạng ngắn, nhập network bằng CIDR, pagination,
 favicon và layout workflow gọn hơn. v28.0.0 bổ sung navigation ngang, hướng dẫn workflow, thời gian theo trình duyệt,
 import CSV Serial-to-Config có preview và bộ reconcile trạng thái chạy độc lập.
 
@@ -235,4 +235,4 @@ pip install -r requirements.txt
 ZTP_DEV=1 python -m unittest -v
 ```
 
-Version hiện tại: **28.1.0**.
+Version hiện tại: **28.1.1**.
