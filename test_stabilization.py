@@ -203,6 +203,12 @@ class StabilizationTests(unittest.TestCase):
         self.assertIn("favicon.svg", html)
         self.assertNotIn("Serial-first provisioning", html)
 
+    def test_nginx_root_proxies_operator_ui_and_static_assets(self):
+        nginx = Path("deploy/ztp-nginx-site.conf").read_text(encoding="utf-8")
+        root_location = nginx.split("location / {", 1)[1]
+        self.assertIn("proxy_pass http://127.0.0.1:8080", root_location)
+        self.assertNotIn("try_files $uri $uri/ =404", root_location)
+
     def test_legacy_nginx_dash_bytes_are_safe(self):
         parsed = app._parse_nginx_line('192.168.250.20 [02/Aug/2026:12:00:00 +0000] "GET /configs/edge.conf HTTP/1.1" 304 0 0.01 "req-304" "edge.conf" "" "AUTO" "-" "test"')
         self.assertIsNotNone(parsed)
