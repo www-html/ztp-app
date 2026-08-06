@@ -1,7 +1,7 @@
-# ztp-app v27.0.2 — hướng dẫn vận hành
+# ztp-app v27.0.3 — hướng dẫn vận hành
 
-v27.0.2 tự cập nhật bảng Deployment Status mỗi 5 giây: thiết bị mới hiển thị
-`In Progress`, sau khi Nginx xác nhận tải đủ file sẽ tự chuyển `Completed`.
+v27.0.3 giữ nguyên View Details khi refresh, không để filter làm thay đổi tổng số
+Observed/Remaining, và chuyển fetch quá hạn hoặc thiếu bytes sang Error.
 
 `ztp-app` là công cụ Juniper ZTP theo Serial Number, chạy bằng Flask, Nginx và ISC DHCP trên một mạng Layer-2 ZTP cô lập.
 
@@ -234,4 +234,4 @@ pip install -r requirements.txt
 ZTP_DEV=1 python -m unittest -v
 ```
 
-Version hiện tại: **27.0.2**.
+Version hiện tại: **27.0.3**.

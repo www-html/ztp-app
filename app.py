@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.2]
+ZTP Web App (Flask) — serial-first Juniper ZTP over HTTP (Nginx) + ISC-DHCP.  [v27.0.3]
 Author: binh.trinh
 
 Matching:
@@ -185,7 +185,7 @@ SETTINGS_FIELDS = ["server_ip", "gateway", "subnet", "netmask", "range_low", "ra
                    "repeated_fetch_window_minutes", "dhcp_retry_limit",
                    "dhcp_retry_window_minutes"]
 AUTHOR = "binh.trinh"
-VERSION = "27.0.2"
+VERSION = "27.0.3"
 
 
 class JsonDataError(RuntimeError):
@@ -2345,7 +2345,7 @@ def ui_result(state: str) -> str:
     if value in {"DELIVERED", "VERIFIED", "COMPLETED", "DOWNLOADED"}:
         return "Completed"
     if value in {"DHCP_SEEN", "LEASED", "MATCHED", "ASSIGNED", "FETCHING",
-                 "ASSIGNED_NO_FETCH", "PARTIAL_FETCH", "RESERVED", "SEEN"}:
+                 "RESERVED", "SEEN"}:
         return "In Progress"
     return "Error"
 
@@ -3229,12 +3229,17 @@ def deployment_rows(*, apply_filters: bool = True) -> list[dict]:
                      "expected_bytes": 0, "actual_bytes": 0, "retry_count": 0,
                      "last_error": friendly_event_message(error), "internal_state": error or "DHCP_SEEN"}
     visible = list(rows.values())
+    visible.sort(key=lambda row: row.get("last_update", ""), reverse=True)
+    return _filter_deployment_rows(visible) if apply_filters else visible
+
+
+def _filter_deployment_rows(rows: list[dict]) -> list[dict]:
+    """Filter table rows without changing deployment-wide metrics."""
+    visible = list(rows)
     try:
         result_filter = request.args.get("result", request.args.get("state", "")).strip().lower()
         search = request.args.get("client_q", request.args.get("serial", "")).strip().lower()
     except RuntimeError:
-        result_filter = search = ""
-    if not apply_filters:
         result_filter = search = ""
     if result_filter:
         visible = [row for row in visible if result_filter in row["result"].lower()]
@@ -3689,8 +3694,9 @@ def provisioning():
 @app.route("/api/deployment-status")
 def deployment_status_api():
     """Return the current device rows for the live Overview display."""
-    rows = deployment_rows()
-    return jsonify({"rows": rows, "metrics": deployment_metrics(rows)})
+    all_rows = deployment_rows(apply_filters=False)
+    return jsonify({"rows": _filter_deployment_rows(all_rows),
+                    "metrics": deployment_metrics(all_rows)})
 
 
 @app.route("/project/status", methods=["POST"])
@@ -3932,8 +3938,9 @@ def index(view=None):
     profiles = read_profiles()
     provisioning = provisioning_summary()
     client_rows = unified_client_rows()
-    deployment_status = deployment_rows() if operating_mode(settings) == "ZTP_PROVISIONING" else []
-    metrics = deployment_metrics(deployment_status) if deployment_status else {
+    deployment_all = deployment_rows(apply_filters=False) if operating_mode(settings) == "ZTP_PROVISIONING" else []
+    deployment_status = _filter_deployment_rows(deployment_all)
+    metrics = deployment_metrics(deployment_all) if operating_mode(settings) == "ZTP_PROVISIONING" else {
         "expected": _safe_int(settings, "project_expected_devices", 0), "observed": 0,
         "completed": 0, "in_progress": 0, "error": 0,
         "remaining": _safe_int(settings, "project_expected_devices", 0)}

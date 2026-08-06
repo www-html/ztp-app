@@ -1,7 +1,7 @@
-# ztp-app v27.0.2
+# ztp-app v27.0.3
 
-v27.0.2 adds a live Deployment Status view (5-second refresh) and reliable automatic
-`In Progress` to `Completed` reconciliation after Nginx confirms the full config body.
+v27.0.3 preserves open device details during live refresh, keeps deployment metrics
+independent from table filters, and classifies stalled or partial fetches as errors.
 
 Serial-first Juniper ZTP operations console using Flask, Nginx and ISC DHCP on an isolated Layer-2 deployment network.
 

@@ -129,11 +129,24 @@ class ThreeModeAcceptanceTests(unittest.TestCase):
 
     def test_live_deployment_status_api(self):
         self._settings("ZTP_PROVISIONING")
-        response = app.app.test_client().get("/api/deployment-status")
+        state = app.read_provisioning_state()
+        state["devices"]["serial:serial001"] = {
+            "serial": "SERIAL001", "state": "DELIVERED", "status": "DELIVERED"}
+        state["devices"]["serial:serial002"] = {
+            "serial": "SERIAL002", "state": "ASSIGNED", "status": "ASSIGNED"}
+        app.commit_provisioning_state(state)
+        response = app.app.test_client().get("/api/deployment-status?result=Completed")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertIn("rows", payload)
-        self.assertIn("metrics", payload)
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["metrics"]["observed"], 2)
+        self.assertEqual(payload["metrics"]["completed"], 1)
+        self.assertEqual(payload["metrics"]["in_progress"], 1)
+
+    def test_stalled_and_partial_fetches_are_errors_not_in_progress(self):
+        self.assertEqual(app.ui_result("ASSIGNED_NO_FETCH"), "Error")
+        self.assertEqual(app.ui_result("PARTIAL_FETCH"), "Error")
+        self.assertEqual(app.ui_result("FETCHING"), "In Progress")
 
     def test_protected_update_and_unchanged_upload(self):
         self._settings()
